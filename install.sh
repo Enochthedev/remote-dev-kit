@@ -9,8 +9,13 @@ BRANCH="${REMOTE_KIT_BRANCH:-main}"
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 
 echo "📦 Installing remote-dev-kit from ${REPO}@${BRANCH} ..."
-for f in docker-compose.remote.yml docker-compose.django.yml .env.remote.example remote; do
-  curl -fsSL "${RAW}/${f}" -o "${f}"
+# src-in-repo : dest-in-your-project  (installed flat so the build context is your project root)
+for pair in \
+  "stacks/docker-compose.remote.yml:docker-compose.remote.yml" \
+  "stacks/docker-compose.django.yml:docker-compose.django.yml" \
+  ".env.remote.example:.env.remote.example" \
+  "bin/remote:remote"; do
+  curl -fsSL "${RAW}/${pair%%:*}" -o "${pair##*:}"
 done
 chmod +x remote
 [ -f .env.remote ] || cp .env.remote.example .env.remote

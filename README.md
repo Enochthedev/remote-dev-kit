@@ -9,6 +9,7 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 ![docker](https://img.shields.io/badge/docker-context-2496ED?logo=docker&logoColor=white)
 ![proxy](https://img.shields.io/badge/proxy-Traefik%20%2F%20Coolify-24A1C1)
 ![any language](https://img.shields.io/badge/stack-any%20language-blueviolet)
+![license](https://img.shields.io/badge/license-MIT-green)
 
 </div>
 
@@ -47,6 +48,23 @@ Pick one with `COMPOSE_FILE` in `.env.remote`:
 | `docker-compose.django.yml` | django · postgres · redis · mailpit · celery · flower | Cookiecutter-Django backends |
 
 > Need a DB/cache in the generic stack? Add services to `docker-compose.remote.yml` on the `default` network — only web-facing services need the `proxy` network + `traefik.*` labels.
+
+## Repo layout
+
+```text
+remote-dev-kit/
+├── bin/
+│   └── remote                     # the ./remote CLI (init · up · down · logs · …)
+├── stacks/
+│   ├── docker-compose.remote.yml  # generic single-service stack (any language)
+│   └── docker-compose.django.yml  # full Cookiecutter-Django stack
+├── .env.remote.example            # copy → .env.remote, the one file you edit
+├── install.sh                     # drops the kit (flat) into any project
+├── LICENSE
+└── README.md
+```
+
+> `install.sh` fetches these and lays them **flat** into your project root — the compose build context has to be the project root, so `remote` + the compose files live there.
 
 ---
 
