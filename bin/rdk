@@ -36,6 +36,12 @@ ACME_EMAIL=you@example.com               # bare-VPS/Traefik mode
 CERT_RESOLVER=letsencrypt
 CERT_ENTRYPOINT=https
 EOF
+    # Keep secrets (SSH target, creds) out of git.
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+      if [ -f .gitignore ] && ! grep -qxF "$ENV_FILE" .gitignore; then printf '\n%s\n' "$ENV_FILE" >> .gitignore
+      elif [ ! -f .gitignore ]; then echo "$ENV_FILE" > .gitignore; fi
+      echo "🔒 added $ENV_FILE to .gitignore"
+    fi
     echo "✅ wrote $ENV_FILE — edit it, then:  rdk connect && rdk up"
   fi
   exit 0
@@ -43,7 +49,24 @@ fi
 
 # --- everything else needs config ------------------------------------------
 [ -f "$ENV_FILE" ] || { echo "❌ no $ENV_FILE here. Run:  rdk init"; exit 1; }
-set -a; source "$ENV_FILE"; set +a
+# Safe loader: parse KEY=VALUE only — never `source` (a crafted .env.remote must not run code).
+_rdk_load() {
+  local line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [ "${line#*=}" = "$line" ] && continue
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    # never let a config file hijack the shell/loader environment
+    case "$key" in PATH|IFS|ENV|BASH_ENV|SHELLOPTS|PS4|PROMPT_COMMAND|LD_*|DYLD_*|BASH_FUNC_*) continue ;; esac
+    val="${val%%[[:space:]]#*}"                       # strip inline comment
+    val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"  # trim
+    case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
+    export "$key=$val"
+  done < "$ENV_FILE"
+}
+_rdk_load
 : "${PROJECT_NAME:?set PROJECT_NAME in $ENV_FILE}"
 : "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
 
@@ -52,6 +75,12 @@ STACK_FILE="$STACKS/${COMPOSE_FILE:-docker-compose.remote.yml}"
 APP_SERVICE="${APP_SERVICE:-app}"
 ROOT="$(pwd)"
 COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACK_FILE")
+
+# --- report helpers (audit / doctor) ---------------------------------------
+RDK_WARN=0; RDK_FAIL=0
+_ok()   { printf "  \033[32m✔\033[0m %s\n" "$1"; }
+_warn() { printf "  \033[33m⚠\033[0m %s\n" "$1"; RDK_WARN=$((RDK_WARN+1)); }
+_bad()  { printf "  \033[31m✘\033[0m %s\n" "$1"; RDK_FAIL=$((RDK_FAIL+1)); }
 
 case "$cmd" in
   connect)
@@ -65,6 +94,56 @@ case "$cmd" in
       down) "${P[@]}" down ;;
       *) echo "usage: rdk proxy {up|down}"; exit 1 ;;
     esac ;;
+  doctor)
+    echo "🩺 RDK doctor — $PROJECT_NAME"
+    command -v docker >/dev/null 2>&1 && _ok "docker CLI installed" || _bad "docker CLI missing (brew install docker)"
+    if ssh -o BatchMode=yes -o ConnectTimeout=8 "$VPS_SSH" 'echo ok' >/dev/null 2>&1; then
+      _ok "passwordless SSH to $VPS_SSH"
+    else
+      _bad "SSH to $VPS_SSH is not passwordless (run: ssh-copy-id $VPS_SSH)"
+    fi
+    docker context inspect "$CTX" >/dev/null 2>&1 && _ok "docker context '$CTX' exists" || _warn "context '$CTX' missing — run: rdk connect"
+    [ -f "$STACK_FILE" ] && _ok "stack '$(basename "$STACK_FILE")' found" || _bad "stack file missing: $STACK_FILE"
+    [ -n "${APP_HOST:-}" ] && _ok "APP_HOST=$APP_HOST" || _warn "APP_HOST not set"
+    echo "── $RDK_FAIL failed, $RDK_WARN warnings ──"; [ "$RDK_FAIL" -eq 0 ] ;;
+
+  audit)
+    echo "🔒 RDK security audit — $PROJECT_NAME"
+    # 1) local config hygiene
+    if git rev-parse --git-dir >/dev/null 2>&1; then
+      if git check-ignore -q "$ENV_FILE" 2>/dev/null || grep -qxF "$ENV_FILE" .git/info/exclude 2>/dev/null; then
+        _ok "$ENV_FILE is gitignored (secrets won't be committed)"
+      else
+        _warn "$ENV_FILE is NOT gitignored — it holds SSH target + creds; add it to .gitignore"
+      fi
+    fi
+    # 2) TLS + headers + debug exposure
+    if [ -n "${APP_HOST:-}" ]; then
+      url="https://$APP_HOST"
+      tls=$(curl -sS -m 15 -o /dev/null -w "%{ssl_verify_result}" "$url/" 2>/dev/null || echo x)
+      [ "$tls" = "0" ] && _ok "TLS certificate valid" || _bad "TLS invalid/unreachable (ssl_verify_result=$tls)"
+      code=$(curl -sS -m 15 -o /dev/null -w "%{http_code}" "http://$APP_HOST/" 2>/dev/null || echo 000)
+      case "$code" in 30*) _ok "HTTP redirects to HTTPS ($code)";; 000) _warn "port 80 unreachable";; *) _warn "HTTP did not redirect (got $code)";; esac
+      hdrs=$(curl -sS -m 15 -D - -o /dev/null "$url/" 2>/dev/null || true)
+      grep -qi "strict-transport-security" <<<"$hdrs" && _ok "HSTS header present" || _warn "no Strict-Transport-Security (HSTS) header"
+      grep -qi "x-content-type-options" <<<"$hdrs" && _ok "X-Content-Type-Options present" || _warn "no X-Content-Type-Options: nosniff"
+      grep -qiE "x-frame-options|content-security-policy" <<<"$hdrs" && _ok "clickjacking protection present" || _warn "no X-Frame-Options / CSP"
+      body=$(curl -sS -m 15 "$url/__rdk_audit_probe_$$" 2>/dev/null || true)
+      if grep -qiE "Traceback \(most recent call|you have .*DEBUG|DjangoDebug|Werkzeug Debugger" <<<"$body"; then
+        _bad "DEBUG error page exposed — leaks stack traces & settings (set DEBUG=False)"
+      else
+        _ok "no debug/error page leaked"
+      fi
+    else
+      _warn "APP_HOST not set — skipped remote HTTPS checks"
+    fi
+    # 3) no host-published ports (DB/redis must stay private, behind the proxy)
+    if docker context inspect "$CTX" >/dev/null 2>&1; then
+      pub=$("${COMPOSE[@]}" ps --format '{{.Name}} {{.Ports}}' 2>/dev/null | grep -oE '0\.0\.0\.0:[0-9]+|:::[0-9]+' | sort -u || true)
+      [ -z "$pub" ] && _ok "no host-published ports (traffic via proxy only)" || _warn "host-published ports (should be proxy-only): $(echo "$pub" | tr '\n' ' ')"
+    fi
+    echo "── $RDK_FAIL failed, $RDK_WARN warnings ──"; [ "$RDK_FAIL" -eq 0 ] ;;
+
   up)     "${COMPOSE[@]}" up -d --build "$@" ;;
   watch)  "${COMPOSE[@]}" up -d --build && echo "👀 syncing edits → VPS (Ctrl-C to stop)…" && "${COMPOSE[@]}" watch ;;
   down)   "${COMPOSE[@]}" down --rmi all -v "$@" ;;
@@ -89,6 +168,8 @@ usage: rdk <command>
   ps           list services
   manage <..>  run manage.py (django stack)
   sh           shell into the app container
+  doctor       check prerequisites (docker, SSH, context)
+  audit        security audit of this deployment (TLS, headers, debug, ports)
 EOF
     exit 1 ;;
 esac

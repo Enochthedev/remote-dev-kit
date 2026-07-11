@@ -22,6 +22,7 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 - 🌐 **Instant HTTPS subdomains** — `myapp.dev.yourdomain.com`, cert and routing handled for you.
 - 🧩 **Any language** — if it has a `Dockerfile`, it works. Node, Go, Rust, Python, PHP, static.
 - 🖥️ **Just needs a VPS** — the kit brings its own Traefik. No PaaS required. (Already run Coolify? It plugs into that too.)
+- 🔒 **Hardened + auditable** — no `source`/`eval` of config, secrets auto-gitignored, and a built-in `rdk audit` for your deployment. See [SECURITY.md](SECURITY.md).
 
 ## Requirements
 
@@ -171,6 +172,8 @@ Pick one with `COMPOSE_FILE` in `.env.remote`:
 | `./remote ps` | List running services |
 | `./remote manage …` | Run `manage.py` (Django stack) |
 | `./remote sh` | Shell into the app container |
+| `rdk doctor` | Check prerequisites (docker, SSH, context) |
+| `rdk audit` | Security audit of the deployment (TLS, headers, debug exposure, ports) |
 
 ## Repo layout
 
