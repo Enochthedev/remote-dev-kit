@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# rdk — global Remote Dev Kit CLI. Install once, run in any project folder.
+# Stacks are bundled centrally ($RDK_HOME/stacks); the only per-project file is .env.remote.
+set -euo pipefail
+
+# --- locate bundled stacks -------------------------------------------------
+RDK_HOME="${RDK_HOME:-$HOME/.remote-dev-kit}"
+STACKS="$RDK_HOME/stacks"
+if [ ! -d "$STACKS" ]; then
+  self="$(cd "$(dirname "$0")" && pwd)"
+  [ -d "$self/../stacks" ] && STACKS="$(cd "$self/../stacks" && pwd)"
+fi
+[ -d "$STACKS" ] || { echo "❌ can't find bundled stacks (set RDK_HOME)"; exit 1; }
+
+ENV_FILE="${RDK_ENV_FILE:-.env.remote}"
+cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+
+# --- init: scaffold the only per-project file ------------------------------
+if [ "$cmd" = "init" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    echo "ℹ️  $ENV_FILE already exists"
+  else
+    proj="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
+    cat > "$ENV_FILE" <<EOF
+# Per-project config — the ONLY file rdk needs in your repo.
+PROJECT_NAME=${proj}
+APP_HOST=${proj}.dev.example.com
+APP_PORT=8000
+APP_SERVICE=app
+COMPOSE_FILE=docker-compose.remote.yml   # or docker-compose.django.yml
+APP_DOCKERFILE=./Dockerfile
+
+VPS_SSH=youruser@YOUR_VPS_IP
+PROXY_NETWORK=web                        # 'web' (bare VPS) or 'coolify'
+ACME_EMAIL=you@example.com               # bare-VPS/Traefik mode
+CERT_RESOLVER=letsencrypt
+CERT_ENTRYPOINT=https
+EOF
+    echo "✅ wrote $ENV_FILE — edit it, then:  rdk connect && rdk up"
+  fi
+  exit 0
+fi
+
+# --- everything else needs config ------------------------------------------
+[ -f "$ENV_FILE" ] || { echo "❌ no $ENV_FILE here. Run:  rdk init"; exit 1; }
+set -a; source "$ENV_FILE"; set +a
+: "${PROJECT_NAME:?set PROJECT_NAME in $ENV_FILE}"
+: "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
+
+CTX="remote-${PROJECT_NAME}"
+STACK_FILE="$STACKS/${COMPOSE_FILE:-docker-compose.remote.yml}"
+APP_SERVICE="${APP_SERVICE:-app}"
+ROOT="$(pwd)"
+COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACK_FILE")
+
+case "$cmd" in
+  connect)
+    docker context create "$CTX" --docker "host=ssh://${VPS_SSH}" 2>/dev/null \
+      && echo "✅ connected '$CTX' → ${VPS_SSH}" || echo "ℹ️  context '$CTX' already exists" ;;
+  proxy)
+    net="${PROXY_NETWORK:-web}"; sub="${1:-up}"; [ $# -gt 0 ] && shift || true
+    P=(docker --context "$CTX" compose -p remote-proxy --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACKS/traefik.yml")
+    case "$sub" in
+      up)   docker --context "$CTX" network create "$net" 2>/dev/null && echo "✅ net '$net'" || true; "${P[@]}" up -d && echo "✅ proxy up (80/443)";;
+      down) "${P[@]}" down ;;
+      *) echo "usage: rdk proxy {up|down}"; exit 1 ;;
+    esac ;;
+  up)     "${COMPOSE[@]}" up -d --build "$@" ;;
+  watch)  "${COMPOSE[@]}" up -d --build && echo "👀 syncing edits → VPS (Ctrl-C to stop)…" && "${COMPOSE[@]}" watch ;;
+  down)   "${COMPOSE[@]}" down --rmi all -v "$@" ;;
+  stop)   "${COMPOSE[@]}" stop "$@" ;;
+  logs)   "${COMPOSE[@]}" logs -f "$@" ;;
+  ps)     "${COMPOSE[@]}" ps "$@" ;;
+  manage) "${COMPOSE[@]}" run --rm "$APP_SERVICE" python manage.py "$@" ;;
+  sh)     "${COMPOSE[@]}" exec "$APP_SERVICE" sh ;;
+  *)
+    cat <<'EOF'
+rdk — Remote Dev Kit (global). Run inside any project folder.
+
+usage: rdk <command>
+  init         scaffold .env.remote here (the only per-project file)
+  connect      create the docker context for this project (once)
+  proxy up     bare VPS only: start Traefik (once per server)
+  up           build on the VPS + deploy
+  watch        deploy + live-sync edits (hot reload)
+  down         destroy (images + volumes)
+  stop         stop containers (keep data)
+  logs [svc]   follow logs
+  ps           list services
+  manage <..>  run manage.py (django stack)
+  sh           shell into the app container
+EOF
+    exit 1 ;;
+esac

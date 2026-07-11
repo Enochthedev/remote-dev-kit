@@ -67,12 +67,31 @@ ssh youruser@YOUR_VPS_IP 'echo ok'             # must print "ok" with no passwor
 > Keep it **DNS only** (grey cloud on Cloudflare) so Traefik can issue Let's Encrypt certs.
 > `*.dev` is safe next to a production `*` record — it's a more specific, separate name.
 
-### 1. Install the kit into your project
+### 1. Install — pick one
+
+**A. Global CLI (recommended)** — install once, `rdk` works in any folder (like `docker`).
+Nothing is dropped in your repos except a small `.env.remote`.
+
+```bash
+# once, ever:
+curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install-global.sh | bash
+#   or, via Homebrew:
+#   brew install Enochthedev/tap/remote-dev-kit
+
+# then in ANY project:
+cd ~/Code/your-project
+rdk init          # writes .env.remote (the only per-project file)
+```
+
+**B. Per-project (vendored)** — drops the stacks + a `./remote` script into the repo:
 
 ```bash
 cd ~/Code/your-project
 curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install.sh | bash
 ```
+
+> The rest of this guide uses `./remote <cmd>`; with the global CLI it's the same commands
+> as `rdk <cmd>` (plus `rdk connect` for what per-project calls `./remote init`).
 
 ### 2. Configure — edit `.env.remote`
 
