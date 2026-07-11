@@ -1,0 +1,2 @@
+# Never ship a real project's filled-in config
+.env.remote

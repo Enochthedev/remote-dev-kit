@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# remote — build your project locally, run + test it on the VPS.
+# Reads config from .env.remote (copy from .env.remote.example).
+set -euo pipefail
+cd "$(dirname "$0")"
+
+ENV_FILE="${ENV_FILE:-.env.remote}"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "❌ Missing $ENV_FILE — copy .env.remote.example to .env.remote and edit it." >&2
+  exit 1
+fi
+set -a; source "$ENV_FILE"; set +a
+: "${PROJECT_NAME:?set PROJECT_NAME in $ENV_FILE}"
+: "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
+
+CTX="remote-${PROJECT_NAME}"
+COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f docker-compose.remote.yml)
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift || true
+case "$cmd" in
+  init)
+    if docker context create "$CTX" --docker "host=ssh://${VPS_SSH}" 2>/dev/null; then
+      echo "✅ context '$CTX' created (→ ${VPS_SSH})"
+    else
+      echo "ℹ️  context '$CTX' already exists"
+    fi
+    ;;
+  up)     "${COMPOSE[@]}" up -d --build "$@" ;;
+  down)   "${COMPOSE[@]}" down --rmi all -v "$@" ;;
+  stop)   "${COMPOSE[@]}" stop "$@" ;;
+  logs)   "${COMPOSE[@]}" logs -f "$@" ;;
+  ps)     "${COMPOSE[@]}" ps "$@" ;;
+  manage) "${COMPOSE[@]}" run --rm django python manage.py "$@" ;;
+  sh)     "${COMPOSE[@]}" exec django bash ;;
+  *)
+    cat <<'EOF'
+remote — build locally, run on the VPS.
+
+usage: ./remote <command> [args]
+  init      create the docker context for this project (run once)
+  up        build on the VPS + deploy
+  down      tear down + delete images/volumes on the VPS
+  stop      stop containers (keep images/volumes)
+  logs      follow logs (e.g. ./remote logs django)
+  ps        list running services
+  manage    run manage.py (e.g. ./remote manage migrate)
+  sh        open a bash shell in the django container
+EOF
+    exit 1 ;;
+esac
