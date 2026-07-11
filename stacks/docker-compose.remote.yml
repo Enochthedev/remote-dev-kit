@@ -23,8 +23,12 @@ services:
       context: .
       dockerfile: ${APP_DOCKERFILE:-./Dockerfile}
     networks:
-      - default
-      - proxy
+      # Higher priority = wins DNS: your own services resolve to your containers,
+      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
+      default:
+        priority: 100
+      proxy:
+        priority: 1
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}

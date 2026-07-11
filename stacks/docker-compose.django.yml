@@ -37,8 +37,12 @@ services:
     <<: *app-base
     command: /start
     networks:
-      - default
-      - proxy
+      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
+      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
+      default:
+        priority: 100
+      proxy:
+        priority: 1
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
@@ -66,8 +70,12 @@ services:
   mailpit:
     image: docker.io/axllent/mailpit:latest
     networks:
-      - default
-      - proxy
+      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
+      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
+      default:
+        priority: 100
+      proxy:
+        priority: 1
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
@@ -89,8 +97,12 @@ services:
     <<: *app-base
     command: /start-flower
     networks:
-      - default
-      - proxy
+      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
+      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
+      default:
+        priority: 100
+      proxy:
+        priority: 1
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
