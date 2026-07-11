@@ -15,6 +15,28 @@ fi
 ENV_FILE="${RDK_ENV_FILE:-.env.remote}"
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 
+_usage() {
+  cat <<'EOF'
+rdk — Remote Dev Kit (global). Run inside any project folder.
+
+usage: rdk <command>
+  init         scaffold .env.remote here (the only per-project file)
+  connect      create the docker context for this project (once)
+  proxy up     bare VPS only: start Traefik (once per server)
+  up           build on the VPS + deploy
+  watch        deploy + live-sync edits (hot reload)
+  down         destroy (images + volumes)
+  stop         stop containers (keep data)
+  logs [svc]   follow logs
+  ps           list services
+  manage <..>  run manage.py (django stack)
+  sh           shell into the app container
+  doctor       check prerequisites (docker, SSH, context)
+  audit        security audit of this deployment (TLS, headers, debug, ports)
+EOF
+}
+case "$cmd" in ''|help|-h|--help) _usage; exit 0 ;; esac
+
 # --- init: scaffold the only per-project file ------------------------------
 if [ "$cmd" = "init" ]; then
   if [ -f "$ENV_FILE" ]; then
@@ -152,24 +174,5 @@ case "$cmd" in
   ps)     "${COMPOSE[@]}" ps "$@" ;;
   manage) "${COMPOSE[@]}" run --rm "$APP_SERVICE" python manage.py "$@" ;;
   sh)     "${COMPOSE[@]}" exec "$APP_SERVICE" sh ;;
-  *)
-    cat <<'EOF'
-rdk — Remote Dev Kit (global). Run inside any project folder.
-
-usage: rdk <command>
-  init         scaffold .env.remote here (the only per-project file)
-  connect      create the docker context for this project (once)
-  proxy up     bare VPS only: start Traefik (once per server)
-  up           build on the VPS + deploy
-  watch        deploy + live-sync edits (hot reload)
-  down         destroy (images + volumes)
-  stop         stop containers (keep data)
-  logs [svc]   follow logs
-  ps           list services
-  manage <..>  run manage.py (django stack)
-  sh           shell into the app container
-  doctor       check prerequisites (docker, SSH, context)
-  audit        security audit of this deployment (TLS, headers, debug, ports)
-EOF
-    exit 1 ;;
+  *) _usage; exit 1 ;;
 esac
