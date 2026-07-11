@@ -20,6 +20,20 @@ x-app-base: &app-base
     - postgres
     - redis
     - mailpit
+  # `./remote watch` live-syncs your Mac edits into the container. Django hot-reloads
+  # via uvicorn --reload; celery workers pick changes up on their next restart.
+  develop:
+    watch:
+      - action: sync
+        path: .
+        target: /app
+        ignore:
+          - .git/
+          - .venv/
+          - node_modules/
+          - __pycache__/
+          - "*.pyc"
+          - .env.remote
 
 volumes:
   postgres_data: {}

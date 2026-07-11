@@ -28,6 +28,7 @@ case "$cmd" in
     fi
     ;;
   up)     "${COMPOSE[@]}" up -d --build "$@" ;;
+  watch)  "${COMPOSE[@]}" up -d --build && echo "👀 syncing edits → VPS (Ctrl-C to stop)…" && "${COMPOSE[@]}" watch ;;
   down)   "${COMPOSE[@]}" down --rmi all -v "$@" ;;
   stop)   "${COMPOSE[@]}" stop "$@" ;;
   logs)   "${COMPOSE[@]}" logs -f "$@" ;;
@@ -62,6 +63,7 @@ usage: ./remote <command> [args]
   init         create the docker context for this project (run once)
   proxy up     bare VPS only: start the kit's Traefik (run once per server)
   up           build on the VPS + deploy
+  watch        deploy + live-sync your edits to the VPS (hot reload)
   down         tear down + delete images/volumes on the VPS
   stop         stop containers (keep images/volumes)
   logs         follow logs (e.g. ./remote logs django)

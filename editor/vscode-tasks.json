@@ -1,0 +1,11 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "remote: watch (hot reload)", "type": "shell", "command": "./remote watch", "isBackground": true, "problemMatcher": [], "presentation": { "panel": "dedicated" } },
+    { "label": "remote: up (deploy)", "type": "shell", "command": "./remote up", "problemMatcher": [] },
+    { "label": "remote: logs", "type": "shell", "command": "./remote logs", "problemMatcher": [] },
+    { "label": "remote: ps", "type": "shell", "command": "./remote ps", "problemMatcher": [] },
+    { "label": "remote: manage migrate", "type": "shell", "command": "./remote manage migrate", "problemMatcher": [] },
+    { "label": "remote: down (destroy)", "type": "shell", "command": "./remote down", "problemMatcher": [] }
+  ]
+}

@@ -21,6 +21,13 @@ done
 chmod +x remote
 [ -f .env.remote ] || cp .env.remote.example .env.remote
 
+# Optional VS Code tasks (Command Palette → "Run Task"). Only if you have none.
+if [ ! -f .vscode/tasks.json ]; then
+  mkdir -p .vscode
+  curl -fsSL "${RAW}/editor/vscode-tasks.json" -o .vscode/tasks.json
+  echo "🧩 Added .vscode/tasks.json (Run Task → remote: watch / up / logs / down)."
+fi
+
 # Keep the kit out of the project's tracked history (local-only).
 if [ -d .git ]; then
   touch .git/info/exclude

@@ -95,6 +95,38 @@ Set `PROJECT_NAME`, `APP_HOST`, `APP_PORT`, `VPS_SSH`, and pick a **proxy mode**
 
 ---
 
+## Iterating on your code
+
+**Deploy new changes** — just run it again. `./remote up` rebuilds the image on the VPS
+(Docker layer cache makes it fast) and recreates the containers with your latest code:
+
+```bash
+# edit code on your Mac …
+./remote up          # → new version live at the same URL
+```
+
+**Hot reload** — sync edits live instead of redeploying each time:
+
+```bash
+./remote watch       # syncs your Mac edits into the running container
+```
+
+`watch` uses `docker compose watch` to stream changed files to the VPS container; your
+dev server (e.g. Django's `runserver`/`uvicorn --reload`) picks them up instantly. Code
+still never persists on the VPS — the sync is into the ephemeral container. (Web hot-reloads;
+background workers like Celery pick changes up on their next `./remote up`.)
+
+**Test a different branch** — the running app only contains the branch you built from.
+To try another branch (a feature, a CMS, etc.), check it out and redeploy:
+
+```bash
+git checkout feat/some-feature
+./remote up          # same URL, now running that branch
+```
+
+**VS Code** — the installer drops `.vscode/tasks.json`, so **⇧⌘P → Run Task** gives you
+`remote: watch / up / logs / ps / down` without touching the terminal.
+
 ## Stacks
 
 Pick one with `COMPOSE_FILE` in `.env.remote`:
@@ -113,6 +145,7 @@ Pick one with `COMPOSE_FILE` in `.env.remote`:
 | `./remote proxy up` | Bare VPS: start the kit's Traefik (once per server) |
 | `./remote init` | Create the remote docker context for this project |
 | `./remote up` | Build on the VPS + deploy |
+| `./remote watch` | Deploy + live-sync edits to the VPS (hot reload) |
 | `./remote down` | Tear down + delete images & volumes on the VPS |
 | `./remote stop` | Stop containers (keep images/volumes) |
 | `./remote logs [svc]` | Follow logs |
