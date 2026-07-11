@@ -14,7 +14,9 @@ set -a; source "$ENV_FILE"; set +a
 : "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
 
 CTX="remote-${PROJECT_NAME}"
-COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f docker-compose.remote.yml)
+STACK="${COMPOSE_FILE:-docker-compose.remote.yml}"
+APP_SERVICE="${APP_SERVICE:-app}"
+COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --env-file "$ENV_FILE" -f "$STACK")
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
@@ -30,8 +32,8 @@ case "$cmd" in
   stop)   "${COMPOSE[@]}" stop "$@" ;;
   logs)   "${COMPOSE[@]}" logs -f "$@" ;;
   ps)     "${COMPOSE[@]}" ps "$@" ;;
-  manage) "${COMPOSE[@]}" run --rm django python manage.py "$@" ;;
-  sh)     "${COMPOSE[@]}" exec django bash ;;
+  manage) "${COMPOSE[@]}" run --rm "$APP_SERVICE" python manage.py "$@" ;;
+  sh)     "${COMPOSE[@]}" exec "$APP_SERVICE" sh ;;
   *)
     cat <<'EOF'
 remote — build locally, run on the VPS.

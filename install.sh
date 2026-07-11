@@ -9,7 +9,7 @@ BRANCH="${REMOTE_KIT_BRANCH:-main}"
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 
 echo "📦 Installing remote-dev-kit from ${REPO}@${BRANCH} ..."
-for f in docker-compose.remote.yml .env.remote.example remote; do
+for f in docker-compose.remote.yml docker-compose.django.yml .env.remote.example remote; do
   curl -fsSL "${RAW}/${f}" -o "${f}"
 done
 chmod +x remote
@@ -18,7 +18,7 @@ chmod +x remote
 # Keep the kit out of the project's tracked history (local-only).
 if [ -d .git ]; then
   touch .git/info/exclude
-  for f in docker-compose.remote.yml .env.remote.example .env.remote remote; do
+  for f in docker-compose.remote.yml docker-compose.django.yml .env.remote.example .env.remote remote; do
     grep -qxF "$f" .git/info/exclude || echo "$f" >> .git/info/exclude
   done
   echo "🔒 Added kit files to .git/info/exclude (won't be committed)."

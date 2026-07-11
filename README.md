@@ -8,8 +8,20 @@ auto-served at `https://<project>.dev.yourdomain.com` with automatic HTTPS. Tear
 down and it's completely gone from the VPS.
 
 Built for the remote-Docker-context + Traefik pattern (works great alongside Coolify).
-The default compose assumes a **Cookiecutter-Django** backend, but any stack works if
-you swap the `services:` block.
+**Language-agnostic:** the default stack runs any project with a `Dockerfile` (Node, Go,
+Rust, Python, PHP, static…). A full Cookiecutter-Django stack ships as an opt-in variant.
+
+## Stacks
+
+Pick one via `COMPOSE_FILE` in `.env.remote`:
+
+| `COMPOSE_FILE` | What it runs | Use for |
+|---|---|---|
+| `docker-compose.remote.yml` (default) | one web service from your `./Dockerfile` | any language/framework |
+| `docker-compose.django.yml` | django + postgres + redis + mailpit + celery + flower | Cookiecutter-Django backends |
+
+Need a DB/cache in the generic stack? Add services to `docker-compose.remote.yml` on the
+`default` network — only web-facing services need the `proxy` network + `traefik.*` labels.
 
 ---
 
