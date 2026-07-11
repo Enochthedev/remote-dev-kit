@@ -77,7 +77,7 @@ Nothing is dropped in your repos except a small `.env.remote`.
 # once, ever:
 curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install-global.sh | bash
 #   or, via Homebrew:
-#   brew install Enochthedev/tap/remote-dev-kit
+#   brew install --HEAD Enochthedev/tap/rdk
 
 # then in ANY project:
 cd ~/Code/your-project
