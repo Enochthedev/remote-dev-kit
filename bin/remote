@@ -34,19 +34,43 @@ case "$cmd" in
   ps)     "${COMPOSE[@]}" ps "$@" ;;
   manage) "${COMPOSE[@]}" run --rm "$APP_SERVICE" python manage.py "$@" ;;
   sh)     "${COMPOSE[@]}" exec "$APP_SERVICE" sh ;;
+  proxy)
+    # Stand up the kit's own Traefik on a BARE VPS (skip if you use Coolify).
+    net="${PROXY_NETWORK:-web}"
+    PROXY=(docker --context "$CTX" compose -p remote-proxy --env-file "$ENV_FILE" -f docker-compose.traefik.yml)
+    sub="${1:-up}"; [ $# -gt 0 ] && shift || true
+    case "$sub" in
+      up)
+        if docker --context "$CTX" network create "$net" 2>/dev/null; then
+          echo "✅ proxy network '$net' created"
+        else
+          echo "ℹ️  proxy network '$net' already exists"
+        fi
+        "${PROXY[@]}" up -d
+        echo "✅ Traefik is up on the VPS (ports 80/443)."
+        ;;
+      down) "${PROXY[@]}" down ;;
+      logs) "${PROXY[@]}" logs -f ;;
+      *) echo "usage: ./remote proxy {up|down|logs}"; exit 1 ;;
+    esac
+    ;;
   *)
     cat <<'EOF'
 remote — build locally, run on the VPS.
 
 usage: ./remote <command> [args]
-  init      create the docker context for this project (run once)
-  up        build on the VPS + deploy
-  down      tear down + delete images/volumes on the VPS
-  stop      stop containers (keep images/volumes)
-  logs      follow logs (e.g. ./remote logs django)
-  ps        list running services
-  manage    run manage.py (e.g. ./remote manage migrate)
-  sh        open a bash shell in the django container
+  init         create the docker context for this project (run once)
+  proxy up     bare VPS only: start the kit's Traefik (run once per server)
+  up           build on the VPS + deploy
+  down         tear down + delete images/volumes on the VPS
+  stop         stop containers (keep images/volumes)
+  logs         follow logs (e.g. ./remote logs django)
+  ps           list running services
+  manage       run manage.py (e.g. ./remote manage migrate)
+  sh           open a shell in the app container
+
+Proxy: on a bare VPS run `./remote proxy up` once. If your VPS already runs
+Coolify/Traefik, set PROXY_NETWORK=coolify in .env.remote and skip that step.
 EOF
     exit 1 ;;
 esac

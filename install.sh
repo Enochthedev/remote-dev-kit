@@ -13,6 +13,7 @@ echo "📦 Installing remote-dev-kit from ${REPO}@${BRANCH} ..."
 for pair in \
   "stacks/docker-compose.remote.yml:docker-compose.remote.yml" \
   "stacks/docker-compose.django.yml:docker-compose.django.yml" \
+  "stacks/traefik.yml:docker-compose.traefik.yml" \
   ".env.remote.example:.env.remote.example" \
   "bin/remote:remote"; do
   curl -fsSL "${RAW}/${pair%%:*}" -o "${pair##*:}"
@@ -23,7 +24,7 @@ chmod +x remote
 # Keep the kit out of the project's tracked history (local-only).
 if [ -d .git ]; then
   touch .git/info/exclude
-  for f in docker-compose.remote.yml docker-compose.django.yml .env.remote.example .env.remote remote; do
+  for f in docker-compose.remote.yml docker-compose.django.yml docker-compose.traefik.yml .env.remote.example .env.remote remote; do
     grep -qxF "$f" .git/info/exclude || echo "$f" >> .git/info/exclude
   done
   echo "🔒 Added kit files to .git/info/exclude (won't be committed)."

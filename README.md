@@ -7,7 +7,7 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 
 ![shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
 ![docker](https://img.shields.io/badge/docker-context-2496ED?logo=docker&logoColor=white)
-![proxy](https://img.shields.io/badge/proxy-Traefik%20%2F%20Coolify-24A1C1)
+![proxy](https://img.shields.io/badge/proxy-Traefik-24A1C1?logo=traefikproxy&logoColor=white)
 ![any language](https://img.shields.io/badge/stack-any%20language-blueviolet)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -21,7 +21,13 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 - 🔒 **Code never leaves your machine** — it's baked into a throwaway image on the VPS, not synced as a folder. `./remote down` and it's *gone*.
 - 🌐 **Instant HTTPS subdomains** — `myapp.dev.yourdomain.com`, cert and routing handled for you.
 - 🧩 **Any language** — if it has a `Dockerfile`, it works. Node, Go, Rust, Python, PHP, static.
-- ♻️ **Set up once, reuse forever** — one wildcard DNS record covers every future project. Zero per-project DNS.
+- 🖥️ **Just needs a VPS** — the kit brings its own Traefik. No PaaS required. (Already run Coolify? It plugs into that too.)
+
+## Requirements
+
+- A **VPS with Docker** installed, and **SSH access** to it. That's the only hard requirement.
+- A **domain** with a wildcard record `*.dev` → your VPS IP (**DNS only** — see setup). One record covers every project, forever.
+- The **`docker` CLI** on your Mac (no local daemon needed): `brew install docker`.
 
 ## How it works
 
@@ -38,6 +44,57 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 
 Your `docker` CLI targets the VPS via a **remote context** — the build happens *there*, so nothing lands on your Mac. The app is **baked into the image** (no bind-mount), so no editable source folder persists on the server.
 
+---
+
+## 🚀 Quick start
+
+### 0. One-time: SSH key + DNS
+
+**Passwordless SSH to your VPS** (the remote context needs key auth):
+
+```bash
+ssh-keygen -t ed25519 -C "remote-dev-kit"      # skip if you already have a key
+ssh-copy-id youruser@YOUR_VPS_IP               # installs your key on the VPS
+ssh youruser@YOUR_VPS_IP 'echo ok'             # must print "ok" with no password
+```
+
+**One wildcard DNS record** (set once, covers every project):
+
+| Type | Name    | Content        | Proxy        |
+|------|---------|----------------|--------------|
+| A    | `*.dev` | `YOUR_VPS_IP`  | **DNS only** |
+
+> Keep it **DNS only** (grey cloud on Cloudflare) so Traefik can issue Let's Encrypt certs.
+> `*.dev` is safe next to a production `*` record — it's a more specific, separate name.
+
+### 1. Install the kit into your project
+
+```bash
+cd ~/Code/your-project
+curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install.sh | bash
+```
+
+### 2. Configure — edit `.env.remote`
+
+Set `PROJECT_NAME`, `APP_HOST`, `APP_PORT`, `VPS_SSH`, and pick a **proxy mode**:
+
+| Your VPS | Set in `.env.remote` | Extra step |
+|----------|----------------------|------------|
+| **Bare** (just Docker) | `PROXY_NETWORK=web` + `ACME_EMAIL=...` | `./remote proxy up` (once per server) |
+| **Runs Coolify/Traefik** | `PROXY_NETWORK=coolify` | none — skip the proxy step |
+
+### 3. Deploy
+
+```bash
+./remote proxy up     # bare VPS only — starts Traefik (run once per server)
+./remote init         # create the docker context for this project (run once)
+./remote up           # build on the VPS + deploy
+```
+
+→ live at `https://<APP_HOST>` with automatic HTTPS. 🎉
+
+---
+
 ## Stacks
 
 Pick one with `COMPOSE_FILE` in `.env.remote`:
@@ -49,74 +106,11 @@ Pick one with `COMPOSE_FILE` in `.env.remote`:
 
 > Need a DB/cache in the generic stack? Add services to `docker-compose.remote.yml` on the `default` network — only web-facing services need the `proxy` network + `traefik.*` labels.
 
-## Repo layout
-
-```text
-remote-dev-kit/
-├── bin/
-│   └── remote                     # the ./remote CLI (init · up · down · logs · …)
-├── stacks/
-│   ├── docker-compose.remote.yml  # generic single-service stack (any language)
-│   └── docker-compose.django.yml  # full Cookiecutter-Django stack
-├── .env.remote.example            # copy → .env.remote, the one file you edit
-├── install.sh                     # drops the kit (flat) into any project
-├── LICENSE
-└── README.md
-```
-
-> `install.sh` fetches these and lays them **flat** into your project root — the compose build context has to be the project root, so `remote` + the compose files live there.
-
----
-
-## ⚙️ One-time setup
-
-<details open>
-<summary><b>1. A VPS with a Traefik-based proxy</b> (e.g. Coolify)</summary>
-
-Note two values (Coolify defaults shown):
-
-```bash
-docker network ls | grep coolify                                 # proxy network → coolify
-docker inspect coolify-proxy 2>/dev/null | grep -i certresolver  # cert resolver → letsencrypt
-```
-</details>
-
-<details open>
-<summary><b>2. One scoped wildcard DNS record</b> — set once, covers every project</summary>
-
-| Type | Name    | Content    | Proxy         |
-|------|---------|------------|---------------|
-| A    | `*.dev` | `<VPS IP>` | **DNS only**  |
-
-Now `anything.dev.yourdomain.com` resolves to the VPS — **no per-project DNS, ever**.
-Keep it **DNS only** (grey cloud on Cloudflare) so Traefik can issue certs via HTTP-01.
-</details>
-
-<details>
-<summary><b>3. Docker CLI on your Mac</b> (no daemon needed)</summary>
-
-```bash
-brew install docker   # just the CLI — the VPS runs the engine
-```
-</details>
-
-## 🚀 Per-project usage
-
-```bash
-# from your project root
-curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install.sh | bash
-
-$EDITOR .env.remote      # PROJECT_NAME · APP_HOST · APP_PORT · VPS_SSH
-./remote init            # create the docker context (once per project)
-./remote up              # build on the VPS + deploy
-```
-
-→ live at `https://<APP_HOST>` with automatic HTTPS. 🎉
-
-### Commands
+## Commands
 
 | Command | Does |
 |---|---|
+| `./remote proxy up` | Bare VPS: start the kit's Traefik (once per server) |
 | `./remote init` | Create the remote docker context for this project |
 | `./remote up` | Build on the VPS + deploy |
 | `./remote down` | Tear down + delete images & volumes on the VPS |
@@ -126,7 +120,25 @@ $EDITOR .env.remote      # PROJECT_NAME · APP_HOST · APP_PORT · VPS_SSH
 | `./remote manage …` | Run `manage.py` (Django stack) |
 | `./remote sh` | Shell into the app container |
 
-## 🔧 Configuration — `.env.remote`
+## Repo layout
+
+```text
+remote-dev-kit/
+├── bin/
+│   └── remote                     # the ./remote CLI (init · proxy · up · down · …)
+├── stacks/
+│   ├── docker-compose.remote.yml  # generic single-service stack (any language)
+│   ├── docker-compose.django.yml  # full Cookiecutter-Django stack
+│   └── traefik.yml                # the kit's own Traefik (bare-VPS mode)
+├── .env.remote.example            # copy → .env.remote, the one file you edit
+├── install.sh                     # drops the kit (flat) into any project
+├── LICENSE
+└── README.md
+```
+
+> `install.sh` fetches these and lays them **flat** into your project root — the compose build context has to be the project root, so `remote` + the compose files live there.
+
+## Configuration — `.env.remote`
 
 | Var | What it is |
 |-----|------------|
@@ -137,7 +149,9 @@ $EDITOR .env.remote      # PROJECT_NAME · APP_HOST · APP_PORT · VPS_SSH
 | `COMPOSE_FILE` | Which stack to run (see table above). |
 | `APP_DOCKERFILE` | Path to your Dockerfile (generic stack). |
 | `VPS_SSH` | `user@vps-ip` for the remote context. |
-| `PROXY_NETWORK` · `CERT_RESOLVER` · `CERT_ENTRYPOINT` | Traefik/Coolify wiring (defaults: `coolify` · `letsencrypt` · `https`). |
+| `PROXY_NETWORK` | `web` (kit's Traefik) or `coolify` (existing proxy). |
+| `ACME_EMAIL` | Let's Encrypt contact (bare-VPS/Traefik mode). |
+| `CERT_RESOLVER` · `CERT_ENTRYPOINT` | Traefik resolver/entrypoint names (defaults: `letsencrypt` · `https`). |
 | `MAIL_HOST` · `FLOWER_HOST` · `*_ENV_FILE` · `*_DOCKERFILE` | Django-stack extras. |
 
 <details>
@@ -155,7 +169,7 @@ Set `DJANGO_ALLOWED_HOSTS` / `CSRF_TRUSTED_ORIGINS` in your app env file.
 </details>
 
 <details>
-<summary><b>Non-Docker-default projects</b></summary>
+<summary><b>Non-Django / other stacks</b></summary>
 
 Point `APP_DOCKERFILE` at your Dockerfile and set `APP_PORT` to whatever it listens on.
 For extra services, add them to `docker-compose.remote.yml`; give only web-facing ones the
