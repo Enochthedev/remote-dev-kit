@@ -37,12 +37,8 @@ services:
     <<: *app-base
     command: /start
     networks:
-      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
-      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
-      default:
-        priority: 100
-      proxy:
-        priority: 1
+      - default
+      - proxy
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
@@ -61,21 +57,27 @@ services:
       - postgres_data_backups:/backups
     env_file:
       - ${DB_ENV_FILE:-./.envs/.local/.postgres}
+    networks:
+      # Unique alias so the app never collides with a "postgres" on the shared
+      # proxy network (e.g. Coolify's own DB). Point DATABASE_URL at this host.
+      default:
+        aliases:
+          - ${PROJECT_NAME}-postgres
 
   redis:
     image: docker.io/redis:7.2
     volumes:
       - redis_data:/data
+    networks:
+      default:
+        aliases:
+          - ${PROJECT_NAME}-redis
 
   mailpit:
     image: docker.io/axllent/mailpit:latest
     networks:
-      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
-      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
-      default:
-        priority: 100
-      proxy:
-        priority: 1
+      - default
+      - proxy
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
@@ -97,12 +99,8 @@ services:
     <<: *app-base
     command: /start-flower
     networks:
-      # Higher priority = wins DNS: backends resolve to OUR postgres/redis,
-      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
-      default:
-        priority: 100
-      proxy:
-        priority: 1
+      - default
+      - proxy
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}

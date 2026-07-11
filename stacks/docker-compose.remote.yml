@@ -23,12 +23,11 @@ services:
       context: .
       dockerfile: ${APP_DOCKERFILE:-./Dockerfile}
     networks:
-      # Higher priority = wins DNS: your own services resolve to your containers,
-      # not a same-named service on the shared proxy network (e.g. Coolify's DB).
-      default:
-        priority: 100
-      proxy:
-        priority: 1
+      # If you add backing services (db/cache) and share a proxy network that has
+      # same-named services (e.g. Coolify), give them a unique alias and point your
+      # app at that host — see docker-compose.django.yml for the pattern.
+      - default
+      - proxy
     labels:
       - traefik.enable=true
       - traefik.docker.network=${PROXY_NETWORK:-coolify}
