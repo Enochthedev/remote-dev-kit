@@ -170,9 +170,30 @@ the host. It doesn't get one: it talks to a **default-deny socket-proxy** that p
 two calls (list containers, stop container). No create, no exec, no delete. See
 [SECURITY.md](SECURITY.md).
 
-## Stacks
+## Already have a compose file? RDK layers on top of it
 
-Pick one with `COMPOSE_FILE` in `.env.remote`:
+If your project has its own `docker-compose.yml`, that file is the source of truth. RDK adds
+only what is actually its business — the proxy network, and the Traefik labels on the one
+web-facing service:
+
+```ini
+BASE_COMPOSE=docker-compose.yml
+APP_SERVICE=web              # whichever of YOUR services faces the web
+```
+
+`rdk up` then runs *your* compose file with a generated overlay on top. Your services, your
+volumes, your networks — untouched. RDK never redefines them.
+
+This is the point: RDK doesn't need to know whether you're Rails, Next, Laravel or Phoenix,
+because it never describes your stack. It only describes how to reach it.
+
+`rdk init` detects your compose file and sets `BASE_COMPOSE` for you. If `APP_SERVICE` is wrong
+or missing, `rdk up` stops before building and lists your actual services.
+
+## Stacks (when you have no compose file)
+
+If there's nothing to overlay, RDK builds a single web service from your `Dockerfile`. Pick one
+with `COMPOSE_FILE` in `.env.remote`:
 
 | `COMPOSE_FILE` | Runs | Use for |
 |---|---|---|
