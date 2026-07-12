@@ -23,10 +23,13 @@ usage: rdk <command>
   init         scaffold .env.remote here (the only per-project file)
   connect      create the docker context for this project (once)
   proxy up     bare VPS only: start Traefik (once per server)
-  up           build on the VPS + deploy
+  reaper up    start the TTL reaper (once per server, any VPS)
+  up [--ttl D] build on the VPS + deploy (optionally expiring after D)
   watch        deploy + live-sync edits (hot reload)
   down         destroy (images + volumes)
   stop         stop containers (keep data)
+  ttl [D|off]  show, set, or clear this project's expiry
+  extend <D>   push the expiry out by D from now
   logs [svc]   follow logs
   ps           list this project's services
   vps          list EVERYTHING running on the VPS (all projects)
@@ -34,6 +37,8 @@ usage: rdk <command>
   sh           shell into the app container
   doctor       check prerequisites (docker, SSH, context)
   audit        security audit of this deployment (TLS, headers, debug, ports)
+
+  D is a duration: 90m, 4h, 2d
 EOF
 }
 case "$cmd" in ''|help|-h|--help) _usage; exit 0 ;; esac
@@ -110,6 +115,67 @@ APP_SERVICE="${APP_SERVICE:-$_default_service}"
 ROOT="$(pwd)"
 COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACK_FILE")
 
+# --- TTL: time-limited deployments -----------------------------------------
+# Expiry is a file on the VPS (/var/lib/rdk/ttl/<project>), not a container label: labels are
+# immutable on a running container, so `rdk extend` would otherwise have to RECREATE your
+# containers just to tell them to live longer. The reaper enforces it; see stacks/reaper.yml.
+TTL_DIR="/var/lib/rdk/ttl"
+TTL_FILE="$TTL_DIR/$PROJECT_NAME"
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
+
+# "90m" | "4h" | "2d" -> seconds
+_ttl_secs() {
+  local d="$1" n u
+  n="${d%[smhd]}"; u="${d##*[0-9]}"
+  case "$n" in ''|*[!0-9]*) echo "❌ bad duration '$d' (try 90m, 4h, 2d)" >&2; return 1 ;; esac
+  case "$u" in
+    s) echo $(( n )) ;;
+    m|'') echo $(( n * 60 )) ;;
+    h) echo $(( n * 3600 )) ;;
+    d) echo $(( n * 86400 )) ;;
+    *) echo "❌ bad duration unit '$u' (use s, m, h, d)" >&2; return 1 ;;
+  esac
+}
+
+_fmt_left() {
+  local s="$1"
+  [ "$s" -le 0 ] && { echo "expired"; return; }
+  local d=$(( s / 86400 )) h=$(( (s % 86400) / 3600 )) m=$(( (s % 3600) / 60 ))
+  [ "$d" -gt 0 ] && { echo "${d}d ${h}h"; return; }
+  [ "$h" -gt 0 ] && { echo "${h}h ${m}m"; return; }
+  echo "${m}m"
+}
+
+# Compute expiry on the VPS clock. Using the Mac's clock would let a few minutes of skew kill
+# a deployment early — and the reaper compares against VPS time.
+_ttl_set() {
+  local secs="$1" exp
+  exp=$(ssh "${SSH_OPTS[@]}" "$VPS_SSH" \
+    "mkdir -p $TTL_DIR && exp=\$(( \$(date +%s) + $secs )) && echo \$exp > '$TTL_FILE' && echo \$exp") || {
+      echo "❌ couldn't write the TTL on $VPS_SSH" >&2; return 1; }
+  echo "$exp"
+}
+
+_ttl_get() {
+  ssh "${SSH_OPTS[@]}" "$VPS_SSH" "cat '$TTL_FILE' 2>/dev/null || true" | tr -dc '0-9'
+}
+
+_ttl_clear() {
+  ssh "${SSH_OPTS[@]}" "$VPS_SSH" "rm -f '$TTL_FILE'"
+}
+
+# Is the reaper actually running? A TTL nobody enforces is worse than no TTL — you'd think
+# the box was cleaning itself up.
+_reaper_running() {
+  [ -n "$(docker --context "$CTX" ps -q --filter 'name=rdk-reaper' 2>/dev/null)" ]
+}
+
+_ttl_warn_if_no_reaper() {
+  _reaper_running && return 0
+  echo "⚠️  no reaper is running on this VPS — the TTL is recorded but nothing will enforce it."
+  echo "    start it once per server:  rdk reaper up"
+}
+
 # --- report helpers (audit / doctor) ---------------------------------------
 RDK_WARN=0; RDK_FAIL=0
 _ok()   { printf "  \033[32m✔\033[0m %s\n" "$1"; }
@@ -120,6 +186,54 @@ case "$cmd" in
   connect)
     docker context create "$CTX" --docker "host=ssh://${VPS_SSH}" 2>/dev/null \
       && echo "✅ connected '$CTX' → ${VPS_SSH}" || echo "ℹ️  context '$CTX' already exists" ;;
+
+  reaper)
+    sub="${1:-up}"; [ $# -gt 0 ] && shift || true
+    R=(docker --context "$CTX" compose -p rdk-reaper --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACKS/reaper.yml")
+    case "$sub" in
+      up)
+        ssh "${SSH_OPTS[@]}" "$VPS_SSH" "mkdir -p $TTL_DIR"
+        # The socket-proxy runs unprivileged, so it needs this host's docker group to open the
+        # socket. The gid is not portable across machines — read it, don't assume it.
+        DOCKER_GID="$(ssh "${SSH_OPTS[@]}" "$VPS_SSH" "stat -c '%g' /var/run/docker.sock")"
+        [ -n "$DOCKER_GID" ] || { echo "❌ couldn't read the docker socket gid on $VPS_SSH"; exit 1; }
+        export DOCKER_GID
+        "${R[@]}" up -d
+        echo "✅ reaper up — expired projects will be stopped (volumes kept)"
+        echo "   it reaches Docker through a default-deny socket-proxy: it may only list"
+        echo "   containers and stop them. No create, no exec, no delete." ;;
+      down) "${R[@]}" down ;;
+      logs) "${R[@]}" logs -f ;;
+      *) echo "usage: rdk reaper {up|down|logs}"; exit 1 ;;
+    esac ;;
+
+  ttl)
+    arg="${1:-}"
+    if [ -z "$arg" ]; then
+      exp="$(_ttl_get)"
+      if [ -z "$exp" ]; then
+        echo "no expiry set for $PROJECT_NAME (runs until you stop it)"
+      else
+        now=$(ssh "${SSH_OPTS[@]}" "$VPS_SSH" 'date +%s')
+        echo "$PROJECT_NAME expires in $(_fmt_left $(( exp - now )))"
+        _reaper_running || _ttl_warn_if_no_reaper
+      fi
+      exit 0
+    fi
+    if [ "$arg" = "off" ]; then
+      _ttl_clear; echo "✅ expiry cleared — $PROJECT_NAME runs until you stop it"; exit 0
+    fi
+    secs="$(_ttl_secs "$arg")" || exit 1
+    _ttl_set "$secs" >/dev/null
+    echo "✅ $PROJECT_NAME expires in $(_fmt_left "$secs")"
+    _ttl_warn_if_no_reaper ;;
+
+  extend)
+    arg="${1:?usage: rdk extend <duration>   e.g. rdk extend 2h}"
+    secs="$(_ttl_secs "$arg")" || exit 1
+    _ttl_set "$secs" >/dev/null
+    echo "✅ $PROJECT_NAME now expires in $(_fmt_left "$secs")"
+    _ttl_warn_if_no_reaper ;;
   proxy)
     net="${PROXY_NETWORK:-web}"; sub="${1:-up}"; [ $# -gt 0 ] && shift || true
     P=(docker --context "$CTX" compose -p remote-proxy --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACKS/traefik.yml")
@@ -139,6 +253,17 @@ case "$cmd" in
     docker context inspect "$CTX" >/dev/null 2>&1 && _ok "docker context '$CTX' exists" || _warn "context '$CTX' missing — run: rdk connect"
     [ -f "$STACK_FILE" ] && _ok "stack '$(basename "$STACK_FILE")' found" || _bad "stack file missing: $STACK_FILE"
     [ -n "${APP_HOST:-}" ] && _ok "APP_HOST=$APP_HOST" || _warn "APP_HOST not set"
+
+    # A TTL that nothing enforces is worse than no TTL: you'd believe the box cleans itself up.
+    _exp="$(_ttl_get 2>/dev/null || true)"
+    if [ -n "$_exp" ]; then
+      if _reaper_running; then
+        _now=$(ssh "${SSH_OPTS[@]}" "$VPS_SSH" 'date +%s' 2>/dev/null || echo 0)
+        _ok "expires in $(_fmt_left $(( _exp - _now ))), reaper is running"
+      else
+        _bad "expiry is set but NO reaper is running — nothing will stop this (rdk reaper up)"
+      fi
+    fi
     echo "── $RDK_FAIL failed, $RDK_WARN warnings ──"; [ "$RDK_FAIL" -eq 0 ] ;;
 
   audit)
@@ -197,7 +322,31 @@ case "$cmd" in
       done
     echo "   (* = this project)" ;;
 
-  up)     "${COMPOSE[@]}" up -d --build "$@" ;;
+  up)
+    # --ttl wins over TTL in .env.remote, so you can borrow the box for an hour without
+    # editing config. Parse it out before compose sees the args.
+    _ttl="${TTL:-}"
+    _args=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --ttl)   _ttl="${2:?--ttl needs a duration, e.g. --ttl 4h}"; shift 2 ;;
+        --ttl=*) _ttl="${1#--ttl=}"; shift ;;
+        *)       _args+=("$1"); shift ;;
+      esac
+    done
+
+    # Validate the duration BEFORE building — failing after a ten-minute remote build
+    # because of a typo would be its own small tragedy.
+    if [ -n "$_ttl" ]; then _secs="$(_ttl_secs "$_ttl")" || exit 1; fi
+
+    "${COMPOSE[@]}" up -d --build ${_args[@]+"${_args[@]}"}
+
+    if [ -n "$_ttl" ]; then
+      _ttl_set "$_secs" >/dev/null
+      echo "⏳ $PROJECT_NAME expires in $(_fmt_left "$_secs") — then it stops (volumes kept)"
+      echo "   extend any time:  rdk extend 2h        cancel:  rdk ttl off"
+      _ttl_warn_if_no_reaper
+    fi ;;
   watch)  "${COMPOSE[@]}" up -d --build && echo "👀 syncing edits → VPS (Ctrl-C to stop)…" && "${COMPOSE[@]}" watch ;;
   down)   "${COMPOSE[@]}" down --rmi all -v "$@" ;;
   stop)   "${COMPOSE[@]}" stop "$@" ;;
