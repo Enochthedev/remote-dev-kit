@@ -28,7 +28,8 @@ usage: rdk <command>
   down         destroy (images + volumes)
   stop         stop containers (keep data)
   logs [svc]   follow logs
-  ps           list services
+  ps           list this project's services
+  vps          list EVERYTHING running on the VPS (all projects)
   manage <..>  run manage.py (django stack)
   sh           shell into the app container
   doctor       check prerequisites (docker, SSH, context)
@@ -48,9 +49,12 @@ if [ "$cmd" = "init" ]; then
 PROJECT_NAME=${proj}
 APP_HOST=${proj}.dev.example.com
 APP_PORT=8000
-APP_SERVICE=app
 COMPOSE_FILE=docker-compose.remote.yml   # or docker-compose.django.yml
 APP_DOCKERFILE=./Dockerfile
+
+# APP_SERVICE=app                        # only set this to override the default;
+                                         # it follows COMPOSE_FILE automatically
+                                         # (django stack -> django, else app)
 
 VPS_SSH=youruser@YOUR_VPS_IP
 PROXY_NETWORK=web                        # 'web' (bare VPS) or 'coolify'
@@ -94,7 +98,15 @@ _rdk_load
 
 CTX="remote-${PROJECT_NAME}"
 STACK_FILE="$STACKS/${COMPOSE_FILE:-docker-compose.remote.yml}"
-APP_SERVICE="${APP_SERVICE:-app}"
+# The primary service differs per stack — the django stack calls it `django`, the
+# generic one calls it `app`. Derive it from the stack instead of making people
+# remember: a wrong APP_SERVICE only surfaces later, as `rdk manage` / `rdk sh`
+# failing with "no such service".
+case "${COMPOSE_FILE:-}" in
+  *django*) _default_service="django" ;;
+  *)        _default_service="app" ;;
+esac
+APP_SERVICE="${APP_SERVICE:-$_default_service}"
 ROOT="$(pwd)"
 COMPOSE=(docker --context "$CTX" compose -p "$PROJECT_NAME" --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACK_FILE")
 
@@ -165,6 +177,25 @@ case "$cmd" in
       [ -z "$pub" ] && _ok "no host-published ports (traffic via proxy only)" || _warn "host-published ports (should be proxy-only): $(echo "$pub" | tr '\n' ' ')"
     fi
     echo "── $RDK_FAIL failed, $RDK_WARN warnings ──"; [ "$RDK_FAIL" -eq 0 ] ;;
+
+  vps)
+    # Everything on the box, not just this project — so you can see what else is
+    # sharing the VPS (and the ports/hosts already taken) before you deploy.
+    echo "🛰  running on ${VPS_SSH}"
+    printf "   %-26s %-34s %-9s %s\n" "PROJECT" "CONTAINER" "STATE" "URL"
+    docker --context "$CTX" ps -a \
+      --format '{{.Label "com.docker.compose.project"}}|{{.Names}}|{{.State}}|{{.Labels}}' \
+      2>/dev/null | sort | while IFS='|' read -r proj name state labels; do
+        [ -n "$proj" ] || proj="—"
+        # Traefik advertises the public host in its router rule: Host(`x.example.com`)
+        # `|| true`: most containers (db, redis, workers) carry no such label, and
+        # under `set -e` a failing grep would otherwise abort the whole listing.
+        host="$(printf '%s' "$labels" | grep -oE 'Host\(`[^`]+`\)' | head -1 | sed -E 's/Host\(`(.*)`\)/\1/' || true)"
+        url=""; [ -n "$host" ] && url="https://$host"
+        mine=" "; [ "$proj" = "$PROJECT_NAME" ] && mine="*"
+        printf " %s %-26s %-34s %-9s %s\n" "$mine" "$proj" "$name" "$state" "$url"
+      done
+    echo "   (* = this project)" ;;
 
   up)     "${COMPOSE[@]}" up -d --build "$@" ;;
   watch)  "${COMPOSE[@]}" up -d --build && echo "👀 syncing edits → VPS (Ctrl-C to stop)…" && "${COMPOSE[@]}" watch ;;

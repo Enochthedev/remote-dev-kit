@@ -12,6 +12,7 @@ echo "📦 Installing rdk into ${RDK_HOME} …"
 mkdir -p "$RDK_HOME/stacks" "$RDK_HOME/bin"
 for f in \
   "stacks/docker-compose.remote.yml" \
+  "stacks/docker-compose.remote-db.yml" \
   "stacks/docker-compose.django.yml" \
   "stacks/traefik.yml" \
   "bin/rdk"; do
