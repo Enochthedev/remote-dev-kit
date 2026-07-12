@@ -14,6 +14,7 @@ for pair in \
   "stacks/docker-compose.remote.yml:docker-compose.remote.yml" \
   "stacks/docker-compose.remote-db.yml:docker-compose.remote-db.yml" \
   "stacks/docker-compose.django.yml:docker-compose.django.yml" \
+  "stacks/reaper.yml:docker-compose.reaper.yml" \
   "stacks/traefik.yml:docker-compose.traefik.yml" \
   ".env.remote.example:.env.remote.example" \
   "bin/remote:remote"; do
@@ -32,7 +33,7 @@ fi
 # Keep the kit out of the project's tracked history (local-only).
 if [ -d .git ]; then
   touch .git/info/exclude
-  for f in docker-compose.remote.yml docker-compose.remote-db.yml docker-compose.django.yml docker-compose.traefik.yml .env.remote.example .env.remote remote; do
+  for f in docker-compose.remote.yml docker-compose.remote-db.yml docker-compose.django.yml docker-compose.traefik.yml docker-compose.reaper.yml .env.remote.example .env.remote remote; do
     grep -qxF "$f" .git/info/exclude || echo "$f" >> .git/info/exclude
   done
   echo "🔒 Added kit files to .git/info/exclude (won't be committed)."

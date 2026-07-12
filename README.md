@@ -143,9 +143,57 @@ $ rdk vps
    (* = this project)
 ```
 
-## Stacks
+## Time-limited deployments
 
-Pick one with `COMPOSE_FILE` in `.env.remote`:
+Spin something up for the afternoon and let it clean itself up. Start the reaper once per
+server, then give any deploy an expiry:
+
+```bash
+rdk reaper up            # once per server
+rdk up --ttl 4h          # → stops itself in 4 hours
+rdk ttl                  # → "myapp expires in 3h 41m"
+rdk extend 2h            # → changed your mind
+rdk ttl off              # → runs until you stop it
+```
+
+Or set `TTL=4h` in `.env.remote` and every `rdk up` inherits it.
+
+**Expiry stops. It never destroys.** Your volumes and database survive; `rdk up` brings it
+straight back. Deleting data stays a deliberate act (`rdk down`).
+
+The timer runs **on the VPS**, not your Mac — a timer on your laptop dies the moment you shut
+the lid, which is exactly when you need it. If you're at your desk, RDK warns you before it
+expires so you can `rdk extend`. If you're not, it stops anyway. That's the point.
+
+⚠ The reaper needs to stop containers, which normally means a writable Docker socket — root on
+the host. It doesn't get one: it talks to a **default-deny socket-proxy** that permits exactly
+two calls (list containers, stop container). No create, no exec, no delete. See
+[SECURITY.md](SECURITY.md).
+
+## Already have a compose file? RDK layers on top of it
+
+If your project has its own `docker-compose.yml`, that file is the source of truth. RDK adds
+only what is actually its business — the proxy network, and the Traefik labels on the one
+web-facing service:
+
+```ini
+BASE_COMPOSE=docker-compose.yml
+APP_SERVICE=web              # whichever of YOUR services faces the web
+```
+
+`rdk up` then runs *your* compose file with a generated overlay on top. Your services, your
+volumes, your networks — untouched. RDK never redefines them.
+
+This is the point: RDK doesn't need to know whether you're Rails, Next, Laravel or Phoenix,
+because it never describes your stack. It only describes how to reach it.
+
+`rdk init` detects your compose file and sets `BASE_COMPOSE` for you. If `APP_SERVICE` is wrong
+or missing, `rdk up` stops before building and lists your actual services.
+
+## Stacks (when you have no compose file)
+
+If there's nothing to overlay, RDK builds a single web service from your `Dockerfile`. Pick one
+with `COMPOSE_FILE` in `.env.remote`:
 
 | `COMPOSE_FILE` | Runs | Use for |
 |---|---|---|
@@ -166,8 +214,11 @@ Only the web service is public. Postgres and Redis stay on the internal network,
 | `rdk init` | Write `.env.remote` — the only per-project file |
 | `rdk connect` | Create this project's remote docker context (once) |
 | `rdk proxy up` | Bare VPS: start Traefik (once per server) |
-| `rdk up` | Build on the VPS and deploy |
+| `rdk reaper up` | Start the TTL reaper (once per server) |
+| `rdk up [--ttl 4h]` | Build on the VPS and deploy, optionally with an expiry |
 | `rdk watch` | Deploy, then live-sync your edits (hot reload) |
+| `rdk ttl [4h\|off]` | Show, set, or clear this project's expiry |
+| `rdk extend 2h` | Push the expiry out from now |
 | `rdk stop` | Stop the containers, keep images and volumes |
 | `rdk down` | Destroy — deletes images **and volumes** |
 | `rdk logs [svc]` | Follow logs |
@@ -207,6 +258,8 @@ The commands are identical — `./remote up`, `./remote watch`, and so on — ex
 | `PROXY_NETWORK` | `web` for RDK's own Traefik, `coolify` for an existing proxy. |
 | `ACME_EMAIL` | Let's Encrypt contact. Bare-VPS mode only. |
 | `CERT_RESOLVER` · `CERT_ENTRYPOINT` | Traefik resolver and entrypoint names. Default `letsencrypt` · `https`. |
+| `TTL` | Expire after this long — `90m`, `4h`, `2d`. Empty = runs until you stop it. |
+| `TTL_PROMPT` | How long before expiry VS Code warns you. `0` disables. |
 | `REDIS_PASSWORD` | **Required** by the `remote-db` stack. Redis will not start without it. |
 | `APP_ENV_FILE` · `DB_ENV_FILE` | Env files for your app and for Postgres (`POSTGRES_USER` / `_PASSWORD` / `_DB`). |
 | `POSTGRES_IMAGE` · `REDIS_IMAGE` | Override the images — postgis, pgvector, a pinned Redis. |

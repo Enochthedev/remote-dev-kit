@@ -14,6 +14,7 @@ for f in \
   "stacks/docker-compose.remote.yml" \
   "stacks/docker-compose.remote-db.yml" \
   "stacks/docker-compose.django.yml" \
+  "stacks/reaper.yml" \
   "stacks/traefik.yml" \
   "bin/rdk"; do
   curl -fsSL "${RAW}/${f}" -o "${RDK_HOME}/${f}"
