@@ -11,6 +11,8 @@ Code stays on your laptop. Builds and containers live on the server. Every proje
 ![any language](https://img.shields.io/badge/stack-any%20language-blueviolet)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
+**📖 [Docs](docs/) · [Getting started](docs/getting-started.md) · [CLI](docs/cli.md) · [VS Code extension](docs/vscode.md) · [Troubleshooting](docs/troubleshooting.md)**
+
 </div>
 
 ---
@@ -169,7 +171,8 @@ Pick one with `COMPOSE_FILE` in `.env.remote`:
 | `./remote down` | Tear down + delete images & volumes on the VPS |
 | `./remote stop` | Stop containers (keep images/volumes) |
 | `./remote logs [svc]` | Follow logs |
-| `./remote ps` | List running services |
+| `./remote ps` | List this project's services |
+| `rdk vps` | List **everything** on the VPS — every project, not just yours |
 | `./remote manage …` | Run `manage.py` (Django stack) |
 | `./remote sh` | Shell into the app container |
 | `rdk doctor` | Check prerequisites (docker, SSH, context) |
@@ -200,7 +203,7 @@ remote-dev-kit/
 | `PROJECT_NAME` | Namespaces containers, volumes & Traefik routers. Unique per project. |
 | `APP_HOST` | Public host, e.g. `myapp.dev.yourdomain.com`. |
 | `APP_PORT` | Port your app listens on inside the container. |
-| `APP_SERVICE` | Primary service name (`app` generic · `django` for the Django stack). |
+| `APP_SERVICE` | Primary service name. Leave unset — it follows `COMPOSE_FILE` (`django` for the Django stack, else `app`). |
 | `COMPOSE_FILE` | Which stack to run (see table above). |
 | `APP_DOCKERFILE` | Path to your Dockerfile (generic stack). |
 | `VPS_SSH` | `user@vps-ip` for the remote context. |

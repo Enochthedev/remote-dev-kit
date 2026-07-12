@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Remote Dev Kit — run your Docker projects on a VPS, not your Mac</title>
+<meta name="description" content="Code stays on your laptop. Builds and containers live on your server. Every project gets its own HTTPS subdomain, automatically.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰️</text></svg>">
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #26303c;
+    --fg: #e6edf3; --muted: #90a0b0; --accent: #4ec9b0; --accent2: #7aa2f7;
+    --code: #0a0e14;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #ffffff; --panel: #f6f8fa; --line: #d8dee4;
+      --fg: #1f2328; --muted: #5b6672; --accent: #0f7b6c; --accent2: #2f5fd0;
+      --code: #f6f8fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+
+  /* hero */
+  header { padding: 88px 0 64px; text-align: center; }
+  .badge {
+    display: inline-block; font-size: 13px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 14px; margin-bottom: 26px;
+  }
+  h1 { font-size: clamp(32px, 6vw, 52px); line-height: 1.1; margin: 0 0 20px; letter-spacing: -0.02em; }
+  h1 .dim { color: var(--muted); }
+  .sub { font-size: clamp(17px, 2.4vw, 20px); color: var(--muted); max-width: 620px; margin: 0 auto 34px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 8px; text-decoration: none;
+    font-weight: 600; font-size: 15px; border: 1px solid var(--line);
+  }
+  .btn-primary { background: var(--accent); color: #06231d; border-color: var(--accent); }
+  .btn-ghost { color: var(--fg); background: var(--panel); }
+
+  /* code blocks */
+  pre {
+    background: var(--code); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; font-size: 14px; line-height: 1.6; margin: 0;
+  }
+  pre .c { color: var(--muted); }
+  pre .p { color: var(--accent); }
+  .install { max-width: 720px; margin: 0 auto 14px; text-align: left; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 28px; }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  .steps { counter-reset: s; display: grid; gap: 20px; }
+  .step { display: grid; grid-template-columns: 34px 1fr; gap: 14px; align-items: start; }
+  .step::before {
+    counter-increment: s; content: counter(s);
+    width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+    background: var(--panel); border: 1px solid var(--line); color: var(--accent);
+    font-size: 14px; font-weight: 700;
+  }
+  .step h3 { margin: 3px 0 8px; font-size: 16px; }
+  .step p { margin: 0 0 10px; color: var(--muted); font-size: 15px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+  td code { color: var(--accent); font-size: 14px; }
+  .scroll { overflow-x: auto; }
+
+  .diagram { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 20px; overflow-x: auto; }
+  .diagram pre { border: 0; padding: 0; background: none; color: var(--muted); font-size: 13px; }
+
+  .note { border-left: 3px solid var(--accent2); background: var(--panel); padding: 14px 18px; border-radius: 0 8px 8px 0; color: var(--muted); font-size: 15px; }
+  .note strong { color: var(--fg); }
+
+  footer { padding: 48px 0 64px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; text-align: center; }
+  a { color: var(--accent2); }
+  .docs-links { display: flex; gap: 10px; flex-wrap: wrap; }
+  .docs-links a {
+    text-decoration: none; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 16px; color: var(--fg); font-size: 15px; font-weight: 500;
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <span class="badge">🛰️ Remote Dev Kit</span>
+    <h1>Run your Docker projects<br>on a VPS — <span class="dim">not your Mac.</span></h1>
+    <p class="sub">
+      Code stays on your laptop. Builds and containers live on the server.
+      Every project gets its own HTTPS subdomain, automatically.
+    </p>
+    <div class="install">
+      <pre><span class="c"># install once, use in any project</span>
+curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/install-global.sh | bash</pre>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="getting-started.md">Get started</a>
+      <a class="btn btn-ghost" href="https://github.com/Enochthedev/remote-dev-kit">GitHub</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>Why</h2>
+    <p class="lede">You bought a laptop to write code, not to host a container farm.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>🧹 Reclaim your Mac</h3>
+        <p>No local images, no build cache, no daemon eating RAM. You can quit Docker Desktop and OrbStack entirely.</p>
+      </div>
+      <div class="card">
+        <h3>🔒 Code never leaves your machine</h3>
+        <p>It's baked into a throwaway image on the VPS — not synced as a folder. Tear it down and it's genuinely gone.</p>
+      </div>
+      <div class="card">
+        <h3>🌐 Instant HTTPS subdomains</h3>
+        <p><code>myapp.dev.yourdomain.com</code>, certificate and routing handled. One DNS record covers every project you'll ever deploy.</p>
+      </div>
+      <div class="card">
+        <h3>🧩 Any language</h3>
+        <p>If it has a Dockerfile, it works. Node, Go, Rust, Python, PHP, static sites.</p>
+      </div>
+      <div class="card">
+        <h3>🖥️ Just needs a VPS</h3>
+        <p>The kit brings its own Traefik. No PaaS required. Already running Coolify? It plugs into that instead.</p>
+      </div>
+      <div class="card">
+        <h3>🛡️ Hardened, and auditable</h3>
+        <p>No <code>eval</code> of your config, secrets auto-ignored, and <code>rdk audit</code> checks a live deploy for TLS, headers and exposed debug pages.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <p class="lede">Your <code>docker</code> CLI points at the VPS over SSH. The build happens <em>there</em>.</p>
+    <div class="diagram">
+<pre>   your Mac                                   your VPS
+ ┌───────────────┐                      ┌────────────────────────────┐
+ │ code + docker │  build ctx over SSH  │  Docker builds the image   │
+ │ CLI (no VM)   │ ───────────────────▶ │  Traefik routes + TLS      │
+ │ rdk up        │                      │  &lt;app&gt;.dev.domain.com  🔒   │
+ └───────────────┘                      └────────────────────────────┘
+        ▲                                            │
+        └──────────  https://&lt;app&gt;.dev.domain.com ◀──┘</pre>
+    </div>
+    <p class="lede" style="margin-top:20px">
+      Nothing lands on your Mac, and no editable source folder persists on the server — the app is
+      baked into the image, not bind-mounted.
+    </p>
+  </section>
+
+  <section>
+    <h2>Three steps to live</h2>
+    <div class="steps">
+      <div class="step">
+        <div>
+          <h3>Point a wildcard at your VPS</h3>
+          <p>One <code>A</code> record — <code>*.dev</code> → your VPS IP, <strong>DNS only</strong> (grey cloud). Set it once; you never touch DNS again.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Configure the project</h3>
+          <p><code>rdk init</code> writes <code>.env.remote</code> — the only file the kit adds to your repo.</p>
+          <pre>cd ~/Code/your-project
+<span class="p">rdk</span> init      <span class="c"># writes .env.remote, then edit it</span>
+<span class="p">rdk</span> connect   <span class="c"># create the docker context (once)</span></pre>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h3>Deploy</h3>
+          <pre><span class="p">rdk</span> proxy up  <span class="c"># bare VPS only — once per server</span>
+<span class="p">rdk</span> up        <span class="c"># build on the VPS + go live</span></pre>
+          <p>Live at <code>https://&lt;APP_HOST&gt;</code>, with a certificate. 🎉</p>
+        </div>
+      </div>
+    </div>
+    <p class="note" style="margin-top:26px">
+      <strong>Already running Coolify?</strong> Skip the proxy step and set
+      <code>PROXY_NETWORK=coolify</code> — it already owns ports 80 and 443, and two proxies cannot
+      share them.
+    </p>
+  </section>
+
+  <section>
+    <h2>The commands</h2>
+    <p class="lede">There aren't many. That's on purpose.</p>
+    <div class="scroll">
+      <table>
+        <tr><th>Command</th><th>Does</th></tr>
+        <tr><td><code>rdk init</code></td><td>Scaffold <code>.env.remote</code> — the only per-project file</td></tr>
+        <tr><td><code>rdk connect</code></td><td>Create the Docker context for this project</td></tr>
+        <tr><td><code>rdk up</code></td><td>Build on the VPS and deploy</td></tr>
+        <tr><td><code>rdk watch</code></td><td>Live-sync your edits into the container (hot reload)</td></tr>
+        <tr><td><code>rdk logs</code> · <code>ps</code> · <code>sh</code></td><td>Follow logs · list this project's services · shell in</td></tr>
+        <tr><td><code>rdk vps</code></td><td>List <em>everything</em> on the VPS — every project, not just yours</td></tr>
+        <tr><td><code>rdk stop</code></td><td>Stop containers, <em>keep</em> the data</td></tr>
+        <tr><td><code>rdk down</code></td><td>Destroy — containers, images <em>and</em> volumes</td></tr>
+        <tr><td><code>rdk doctor</code></td><td>Check prerequisites: docker, SSH, context</td></tr>
+        <tr><td><code>rdk audit</code></td><td>Security audit of the live deployment</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Prefer not to touch a terminal?</h2>
+    <p class="lede">There's a VS Code extension. Same engine, same config file.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Sidebar, not shell</h3>
+        <p>Deploy, Watch, Logs, Status, Open in Browser, Destroy — all from the Remote Dev Kit view.</p>
+      </div>
+      <div class="card">
+        <h3>One source of truth</h3>
+        <p><strong>Configure…</strong> writes the same <code>.env.remote</code> the CLI reads, so the two can't drift apart.</p>
+      </div>
+      <div class="card">
+        <h3>Mix freely</h3>
+        <p>Deploy from the sidebar, tail logs from your terminal. It's the same stacks underneath.</p>
+      </div>
+    </div>
+    <p style="margin-top:22px">
+      <a href="vscode.md">Extension docs →</a>
+    </p>
+  </section>
+
+  <section>
+    <h2>Docs</h2>
+    <div class="docs-links">
+      <a href="getting-started.md">Getting started</a>
+      <a href="cli.md">CLI reference</a>
+      <a href="vscode.md">VS Code extension</a>
+      <a href="troubleshooting.md">Troubleshooting</a>
+      <a href="https://github.com/Enochthedev/remote-dev-kit/blob/main/SECURITY.md">Security</a>
+    </div>
+  </section>
+
+  <footer>
+    <p><strong>Build local · run remote · tear down clean.</strong></p>
+    <p>MIT licensed · <a href="https://github.com/Enochthedev/remote-dev-kit">github.com/Enochthedev/remote-dev-kit</a></p>
+  </footer>
+</div>
+
+</body>
+</html>
