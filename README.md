@@ -36,8 +36,10 @@ ssh youruser@YOUR_VPS_IP 'echo ok'    # must print "ok" without prompting
 **3 ▸ Deploy.** In any project with a `Dockerfile`:
 
 ```bash
+rdk setup         # once per machine: VPS + proxy (auto-detected) + email + base domain
+
 cd ~/Code/your-project
-rdk init          # writes .env.remote — edit APP_HOST, VPS_SSH, APP_PORT
+rdk init          # writes .env.remote — after setup it's just name/host/port
 rdk connect       # creates the docker context for this project (once)
 rdk up            # builds on the VPS and starts it
 ```
@@ -211,8 +213,11 @@ Only the web service is public. Postgres and Redis stay on the internal network,
 
 | Command | Does |
 |---|---|
-| `rdk init` | Write `.env.remote` — the only per-project file |
-| `rdk connect` | Create this project's remote docker context (once) |
+| `rdk setup` | Once per machine: save VPS/proxy/email defaults every project inherits |
+| `rdk init [--db postgres]` | Write `.env.remote` — the only per-project file. `--db` scaffolds Postgres+Redis with generated credentials |
+| `rdk config` | Show the effective config here: project > global > built-in |
+| `rdk stack explain` | Services, env vars, and volumes of the selected stack |
+| `rdk connect` | Create this project's remote docker context (once); warns on a wrong proxy network |
 | `rdk proxy up` | Bare VPS: start Traefik (once per server) |
 | `rdk reaper up` | Start the TTL reaper (once per server) |
 | `rdk up [--ttl 4h]` | Build on the VPS and deploy, optionally with an expiry |

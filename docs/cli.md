@@ -7,8 +7,11 @@ so to deploy one service out of a monorepo, `cd` into that service and run `rdk`
 
 | Command | What it does |
 |---|---|
-| `rdk init` | Scaffold `.env.remote` — the only per-project file. Auto-ignores it. |
-| `rdk connect` | Create the Docker context pointing at your VPS. Once per project. |
+| `rdk setup` | **Once per machine:** save VPS, proxy, ACME email + base domain to `~/.config/rdk/config`. SSHes in and auto-detects the proxy network. Every project inherits these. |
+| `rdk init [--db postgres]` | Scaffold `.env.remote` — the only per-project file. Auto-ignores it. With `--db postgres`, picks the Postgres+Redis stack and scaffolds `.env.remote.db`/`.env.remote.app` with a generated password and a ready-made `DATABASE_URL`. |
+| `rdk config` | Show the effective merged config for this folder — each value marked `(project)`, `(global)` or `(built-in default)`. |
+| `rdk stack explain` | What the selected stack actually runs: services, the env vars it reads (required vs default), data volumes, and how the app reaches Postgres/Redis. |
+| `rdk connect` | Create the Docker context pointing at your VPS. Once per project. Warns if your `PROXY_NETWORK` doesn't exist on the box (and names the one that does). |
 | `rdk proxy up` | **Bare VPS only:** start the kit's Traefik. Once per *server*, not per project. |
 | `rdk up` | Build on the VPS and deploy. This is the one you'll type most. |
 | `rdk watch` | Deploy, then live-sync your edits into the container (hot reload). |

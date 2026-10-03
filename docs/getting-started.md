@@ -47,13 +47,25 @@ curl -fsSL https://raw.githubusercontent.com/Enochthedev/remote-dev-kit/main/ins
 That puts `rdk` on your PATH and the stacks in `~/.remote-dev-kit`. Install once; it works
 in every project after that.
 
+Then tell rdk about your server — once, for every project you'll ever deploy:
+
+```bash
+rdk setup       # asks for VPS, SSHes in, DETECTS the proxy (coolify / bare),
+                # asks your ACME email + base domain, saves ~/.config/rdk/config
+```
+
+After `rdk setup`, a new project's `.env.remote` is three lines you mostly don't edit
+(name, host, port) — everything machine-level is inherited. Skip `setup` and `rdk init`
+falls back to the full template with every field inline.
+
 ## 4. Deploy something
 
 ```bash
 cd ~/Code/your-project
 
 rdk init        # writes .env.remote — the only file rdk adds to your repo
-                # now edit it: PROJECT_NAME, APP_HOST, VPS_SSH, APP_PORT
+                # (need a database? rdk init --db postgres also scaffolds
+                #  Postgres+Redis with a generated password and DATABASE_URL)
 
 rdk connect     # creates the docker context for this project (once)
 rdk proxy up    # bare VPS only — starts Traefik (once per server, not per project)

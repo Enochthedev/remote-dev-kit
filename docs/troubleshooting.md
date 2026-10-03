@@ -49,6 +49,18 @@ Then set `DJANGO_ALLOWED_HOSTS` and `CSRF_TRUSTED_ORIGINS` in your app's env fil
 environment, and a stack trace with source to anyone who finds a 500. Run `rdk audit` — it
 checks for exactly this.
 
+## The VPS build fails on dependencies your Mac installs fine (pnpm/npm)
+
+The VPS builds from a clean image — none of your Mac's toolchain state comes along. Two
+things bite in practice:
+
+- **Pin your package manager** in `package.json`, e.g. `"packageManager": "pnpm@10.7.1"`,
+  and use `corepack enable` in the Dockerfile. Otherwise the image picks whatever's
+  current — pnpm 11's minimum-release-age guard, for example, rejects freshly-published
+  dependency versions that installed fine locally the day before.
+- **Commit your lockfile** and install with `pnpm install --frozen-lockfile` (or
+  `npm ci`). Reproducible on the VPS means the same resolution you tested locally.
+
 ## The build dies with "connection reset by peer"
 
 Long builds stream over SSH, and an idle-looking connection gets dropped.

@@ -13,6 +13,61 @@ fi
 [ -d "$STACKS" ] || { echo "❌ can't find bundled stacks (set RDK_HOME)"; exit 1; }
 
 ENV_FILE="${RDK_ENV_FILE:-.env.remote}"
+
+# --- global config ----------------------------------------------------------
+# Machine-level constants (which VPS, which proxy, whose email) are the same for
+# every project on this machine — retyping them per-project is repetition plus a
+# place to slip. `rdk setup` writes them once; .env.remote overrides per-project.
+RDK_CONFIG="${RDK_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/rdk/config}"
+# Only these may come from the global file: everything else (PROJECT_NAME,
+# APP_HOST, …) is genuinely per-project and must live in .env.remote.
+GLOBAL_KEYS="VPS_SSH PROXY_NETWORK ACME_EMAIL CERT_RESOLVER CERT_ENTRYPOINT DOMAIN_BASE HTTP_ENTRYPOINT"
+
+# Safe loader: parse KEY=VALUE only — never `source` (a crafted config must not run code).
+_rdk_load_file() {  # <file> [allowed-keys]
+  local file="$1" allowed="${2:-}" line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [ "${line#*=}" = "$line" ] && continue
+    key="${line%%=*}"; val="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    # never let a config file hijack the shell/loader environment
+    case "$key" in PATH|IFS|ENV|BASH_ENV|SHELLOPTS|PS4|PROMPT_COMMAND|LD_*|DYLD_*|BASH_FUNC_*) continue ;; esac
+    if [ -n "$allowed" ]; then
+      case " $allowed " in *" $key "*) ;; *) continue ;; esac
+    fi
+    val="${val%%[[:space:]]#*}"                       # strip inline comment
+    val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"  # trim
+    case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
+    export "$key=$val"
+  done < "$file"
+}
+
+_slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g'; }
+
+_gen_secret() {
+  if command -v openssl >/dev/null 2>&1; then openssl rand -hex 16
+  else LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 32 || true; fi
+}
+
+# Which network does the VPS's proxy actually use? Guessing this wrong is the #1
+# deploy failure — probe the box instead of making the user know.
+_detect_proxy_net() {  # <newline-list of networks> -> best-known match
+  local nets="$1" c
+  for c in coolify dokploy-network web; do
+    printf '%s\n' "$nets" | grep -qxF "$c" && { echo "$c"; return 0; }
+  done
+  return 1
+}
+
+# Placeholder values proceed today and die minutes later at cert issuance —
+# refuse the obvious ones up front.
+_is_placeholder() {
+  case "$1" in *YOUR_VPS_IP*|youruser@*|*example.com*|*change-me*|*changeme*) return 0 ;; esac
+  return 1
+}
+
 cmd="${1:-}"; [ $# -gt 0 ] && shift || true
 
 _usage() {
@@ -20,7 +75,10 @@ _usage() {
 rdk — Remote Dev Kit (global). Run inside any project folder.
 
 usage: rdk <command>
-  init         scaffold .env.remote here (the only per-project file)
+  setup        one-time: save VPS + proxy defaults every project inherits
+  init [--db]  scaffold .env.remote here (--db postgres adds Postgres+Redis)
+  config       show the effective config here (project > global > default)
+  stack        explain the selected stack: services, env vars, volumes
   connect      create the docker context for this project (once)
   proxy up     bare VPS only: start Traefik (once per server)
   reaper up    start the TTL reaper (once per server, any VPS)
@@ -43,80 +101,296 @@ EOF
 }
 case "$cmd" in ''|help|-h|--help) _usage; exit 0 ;; esac
 
+# --- setup: one-time machine config -----------------------------------------
+if [ "$cmd" = "setup" ]; then
+  vps="" email="" domain="" proxy=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --vps)    vps="${2:?--vps needs user@host}"; shift 2 ;;
+      --email)  email="${2:?--email needs an address}"; shift 2 ;;
+      --domain) domain="${2:?--domain needs a base domain}"; shift 2 ;;
+      --proxy)  proxy="${2:?--proxy needs a network name}"; shift 2 ;;
+      *) echo "usage: rdk setup [--vps user@ip] [--email you@x.com] [--domain dev.x.com] [--proxy web|coolify]"; exit 1 ;;
+    esac
+  done
+  # re-running setup edits the existing config, it doesn't clobber it
+  if [ -f "$RDK_CONFIG" ]; then _rdk_load_file "$RDK_CONFIG" "$GLOBAL_KEYS"; fi
+
+  if [ -z "$vps" ]; then
+    if [ -t 0 ]; then printf "VPS SSH target (user@host) [%s]: " "${VPS_SSH:-}"; read -r vps; fi
+    vps="${vps:-${VPS_SSH:-}}"
+  fi
+  [ -n "$vps" ] || { echo "❌ need a VPS:  rdk setup --vps user@ip"; exit 1; }
+  if _is_placeholder "$vps"; then echo "❌ '$vps' is still a placeholder — use your real server"; exit 1; fi
+
+  echo "🔑 checking SSH to ${vps}…"
+  if ssh -o BatchMode=yes -o ConnectTimeout=8 "$vps" 'echo ok' >/dev/null 2>&1; then
+    echo "   ✔ passwordless SSH works"
+    if [ -z "$proxy" ]; then
+      nets="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$vps" "docker network ls --format '{{.Name}}'" 2>/dev/null || true)"
+      if det="$(_detect_proxy_net "$nets")"; then
+        proxy="$det"
+        echo "   ✔ detected proxy network on the VPS: $proxy"
+      else
+        proxy="web"
+        echo "   ℹ no coolify/dokploy/web network found — assuming bare VPS (PROXY_NETWORK=web)."
+        echo "     run once per server:  rdk proxy up"
+      fi
+    fi
+  else
+    echo "   ⚠ SSH isn't passwordless yet (fix: ssh-copy-id $vps) — skipping proxy detection"
+    proxy="${proxy:-${PROXY_NETWORK:-web}}"
+  fi
+
+  if [ -z "$email" ]; then
+    if [ -t 0 ]; then printf "ACME email for Let's Encrypt certs [%s]: " "${ACME_EMAIL:-}"; read -r email; fi
+    email="${email:-${ACME_EMAIL:-}}"
+  fi
+  if [ -z "$domain" ]; then
+    if [ -t 0 ]; then printf "Base domain for app hosts, e.g. dev.example.com (apps become <project>.<base>) [%s]: " "${DOMAIN_BASE:-}"; read -r domain; fi
+    domain="${domain:-${DOMAIN_BASE:-}}"
+  fi
+
+  mkdir -p "$(dirname "$RDK_CONFIG")"
+  {
+    echo "# rdk global config — machine-level defaults every project inherits."
+    echo "# A project's .env.remote overrides any of these by re-declaring the line."
+    echo "VPS_SSH=$vps"
+    echo "PROXY_NETWORK=$proxy"
+    if [ -n "$email" ];  then echo "ACME_EMAIL=$email"; fi
+    if [ -n "$domain" ]; then echo "DOMAIN_BASE=$domain"; fi
+    echo "CERT_RESOLVER=${CERT_RESOLVER:-letsencrypt}"
+    echo "CERT_ENTRYPOINT=${CERT_ENTRYPOINT:-https}"
+  } > "$RDK_CONFIG"
+  echo "✅ wrote $RDK_CONFIG"
+  echo "   new projects now scaffold minimal:  rdk init  →  edit APP_PORT if needed  →  rdk connect && rdk up"
+  exit 0
+fi
+
 # --- init: scaffold the only per-project file ------------------------------
 if [ "$cmd" = "init" ]; then
+  db=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --db)   db="${2:?--db needs a value: postgres | none}"; shift 2 ;;
+      --db=*) db="${1#--db=}"; shift ;;
+      *) echo "usage: rdk init [--db postgres|none]"; exit 1 ;;
+    esac
+  done
+  case "$db" in
+    ''|none|postgres) ;;
+    mysql) echo "❌ --db mysql isn't available yet — postgres is the supported engine for now"; exit 1 ;;
+    *) echo "❌ unknown --db '$db' (postgres | none)"; exit 1 ;;
+  esac
+
   if [ -f "$ENV_FILE" ]; then
     echo "ℹ️  $ENV_FILE already exists"
-  else
-    proj="$(basename "$(pwd)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
+    exit 0
+  fi
 
-    # If you already have a compose file, use it. RDK layers its traefik labels on top rather
-    # than shipping a rival definition of your own stack.
-    _own=""
-    for _f in compose.yaml compose.yml docker-compose.yml docker-compose.yaml docker-compose.local.yml; do
-      [ -f "$_f" ] && { _own="$_f"; break; }
-    done
+  proj="$(_slug "$(basename "$(pwd)")")"
+  has_global=""
+  if [ -f "$RDK_CONFIG" ]; then has_global=yes; _rdk_load_file "$RDK_CONFIG" "$GLOBAL_KEYS"; fi
 
-    {
-      echo "# Per-project config — the ONLY file rdk needs in your repo."
-      echo "PROJECT_NAME=${proj}"
-      echo "APP_HOST=${proj}.dev.example.com"
-      echo "APP_PORT=8000"
+  # If you already have a compose file, use it. RDK layers its traefik labels on top rather
+  # than shipping a rival definition of your own stack.
+  _own=""
+  for _f in compose.yaml compose.yml docker-compose.yml docker-compose.yaml docker-compose.local.yml; do
+    [ -f "$_f" ] && { _own="$_f"; break; }
+  done
+  if [ -n "$_own" ] && [ "$db" = "postgres" ]; then
+    echo "ℹ️  you have $_own — add postgres to YOUR compose file instead; RDK overlays it rather than replacing it."
+    db=""
+  fi
+
+  # DB stacks get real generated secrets, not placeholders that fail at deploy time.
+  pg_pass=""; redis_pass=""; pg_name=""
+  if [ "$db" = "postgres" ]; then
+    pg_pass="$(_gen_secret)"; redis_pass="$(_gen_secret)"
+    pg_name="$(printf '%s' "$proj" | tr '-' '_')"   # psql identifiers dislike hyphens
+  fi
+
+  {
+    echo "# Per-project config — the ONLY file rdk needs in your repo."
+    echo ""
+    echo "# ── you must check these ────────────────────────────────────────────"
+    echo "PROJECT_NAME=${proj}"
+    if [ -n "${DOMAIN_BASE:-}" ]; then
+      echo "APP_HOST=${proj}.${DOMAIN_BASE}"
+    else
+      echo "APP_HOST=${proj}.dev.example.com         # <- your real (sub)domain"
+    fi
+    echo "APP_PORT=8000                            # the port your app listens on IN the container"
+    if [ -n "$_own" ]; then
       echo ""
-      if [ -n "$_own" ]; then
-        echo "# Your compose file is the source of truth. RDK adds only the proxy network and"
-        echo "# the traefik labels on APP_SERVICE — it does not redefine your services."
-        echo "BASE_COMPOSE=${_own}"
-        echo "APP_SERVICE=                             # <- which of your services faces the web"
-      else
-        echo "# No compose file here, so RDK builds a single web service from your Dockerfile."
-        echo "COMPOSE_FILE=docker-compose.remote.yml   # or docker-compose.remote-db.yml / .django.yml"
-        echo "APP_DOCKERFILE=./Dockerfile"
-      fi
+      echo "# Your compose file is the source of truth. RDK adds only the proxy network and"
+      echo "# the traefik labels on APP_SERVICE — it does not redefine your services."
+      echo "BASE_COMPOSE=${_own}"
+      echo "APP_SERVICE=                             # <- which of your services faces the web"
+    elif [ "$db" = "postgres" ]; then
+      echo "COMPOSE_FILE=docker-compose.remote-db.yml"
+      echo "APP_DOCKERFILE=./Dockerfile"
+    else
+      echo "# No compose file here, so RDK builds a single web service from your Dockerfile."
+      echo "COMPOSE_FILE=docker-compose.remote.yml   # or docker-compose.remote-db.yml / .django.yml — see: rdk stack explain"
+      echo "APP_DOCKERFILE=./Dockerfile"
+    fi
+    if [ "$db" = "postgres" ]; then
       echo ""
-      echo "VPS_SSH=youruser@YOUR_VPS_IP"
-      echo "PROXY_NETWORK=web                        # 'web' (bare VPS) or 'coolify'"
-      echo "ACME_EMAIL=you@example.com               # bare-VPS/Traefik mode"
+      echo "# ── database: postgres + redis run next to the app ──────────────────"
+      echo "# Your app reaches them at the hostnames ${proj}-postgres and ${proj}-redis:"
+      echo "#   DATABASE_URL=postgres://${pg_name}:${pg_pass}@${proj}-postgres:5432/${pg_name}"
+      echo "#   REDIS_URL=redis://:${redis_pass}@${proj}-redis:6379/0"
+      echo "# (already scaffolded into .env.remote.app / .env.remote.db for you)"
+      echo "# Data PERSISTS across 'rdk stop' and redeploys; 'rdk down' DESTROYS the volumes."
+      echo "REDIS_PASSWORD=${redis_pass}"
+      echo "APP_ENV_FILE=./.env.remote.app           # the app's runtime env (secrets)"
+      echo "DB_ENV_FILE=./.env.remote.db             # postgres bootstrap (user/password/db)"
+    fi
+    echo ""
+    if [ -n "$has_global" ]; then
+      echo "# ── inherited from $RDK_CONFIG ──"
+      echo "# (override any of these by re-declaring the line here)"
+      for k in $GLOBAL_KEYS; do
+        eval "_v=\${$k:-}"
+        if [ -n "$_v" ]; then echo "#   $k=$_v"; fi
+      done
+    else
+      echo "# ── VPS + proxy — same for all your projects; save once with 'rdk setup' ──"
+      echo "VPS_SSH=youruser@YOUR_VPS_IP             # <- you must set this"
+      echo "PROXY_NETWORK=web                        # 'web' (bare VPS) or 'coolify' — 'rdk doctor' detects after connect"
+      echo "ACME_EMAIL=you@example.com               # <- you must set this (Let's Encrypt)"
+      echo ""
+      echo "# ── defaults — leave these alone unless you know why ────────────────"
       echo "CERT_RESOLVER=letsencrypt"
       echo "CERT_ENTRYPOINT=https"
-      echo ""
-      echo "# TTL=4h                                 # optional: stop automatically after this long"
-    } > "$ENV_FILE"
-
-    [ -n "$_own" ] && echo "🧩 found $_own — using it as the base, RDK will only add the proxy + TLS labels"
-    # Keep secrets (SSH target, creds) out of git.
-    if git rev-parse --git-dir >/dev/null 2>&1; then
-      if [ -f .gitignore ] && ! grep -qxF "$ENV_FILE" .gitignore; then printf '\n%s\n' "$ENV_FILE" >> .gitignore
-      elif [ ! -f .gitignore ]; then echo "$ENV_FILE" > .gitignore; fi
-      echo "🔒 added $ENV_FILE to .gitignore"
     fi
-    echo "✅ wrote $ENV_FILE — edit it, then:  rdk connect && rdk up"
+    echo ""
+    echo "# TTL=4h                                 # optional: stop automatically after this long"
+  } > "$ENV_FILE"
+
+  # Scaffold the stack's env files too — the compose file consumes them, nobody
+  # should have to open it to discover that.
+  _extra_ignores=""
+  if [ "$db" = "postgres" ]; then
+    if [ ! -f .env.remote.db ]; then
+      {
+        echo "# Postgres bootstrap — consumed by the postgres service on first start."
+        echo "POSTGRES_USER=${pg_name}"
+        echo "POSTGRES_PASSWORD=${pg_pass}"
+        echo "POSTGRES_DB=${pg_name}"
+      } > .env.remote.db
+      _extra_ignores="$_extra_ignores .env.remote.db"
+    fi
+    if [ ! -f .env.remote.app ]; then
+      {
+        echo "# Runtime env for YOUR app container — add your app's secrets here."
+        echo "DATABASE_URL=postgres://${pg_name}:${pg_pass}@${proj}-postgres:5432/${pg_name}"
+        echo "REDIS_URL=redis://:${redis_pass}@${proj}-redis:6379/0"
+      } > .env.remote.app
+      _extra_ignores="$_extra_ignores .env.remote.app"
+    fi
   fi
+
+  if [ -n "$_own" ]; then echo "🧩 found $_own — using it as the base, RDK will only add the proxy + TLS labels"; fi
+  # Keep secrets (SSH target, creds) out of git.
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    for _ig in "$ENV_FILE" $_extra_ignores; do
+      if [ -f .gitignore ] && ! grep -qxF "$_ig" .gitignore; then printf '\n%s\n' "$_ig" >> .gitignore
+      elif [ ! -f .gitignore ]; then echo "$_ig" > .gitignore; fi
+    done
+    echo "🔒 gitignored: $ENV_FILE$( [ -n "$_extra_ignores" ] && printf '%s' "$_extra_ignores" )"
+  fi
+
+  echo "✅ wrote $ENV_FILE"
+  if [ "$db" = "postgres" ]; then
+    echo "   + .env.remote.db / .env.remote.app with a generated password and ready-made DATABASE_URL"
+  fi
+  if [ -n "$has_global" ]; then
+    echo "   VPS + proxy inherited from rdk setup — check APP_HOST/APP_PORT, then:  rdk connect && rdk up"
+  else
+    echo "   fill in VPS_SSH + ACME_EMAIL (or run 'rdk setup' once to save them for every project),"
+    echo "   then:  rdk connect && rdk up"
+  fi
+  exit 0
+fi
+
+# --- config: show the effective merged view ---------------------------------
+# Works before init too — precedence is project .env.remote > global > built-in.
+if [ "$cmd" = "config" ]; then
+  if [ -f "$RDK_CONFIG" ]; then _rdk_load_file "$RDK_CONFIG" "$GLOBAL_KEYS"; fi
+  if [ -f "$ENV_FILE" ]; then _rdk_load_file "$ENV_FILE"; fi
+  echo "⚙️  effective config in $(pwd)"
+  if [ -f "$RDK_CONFIG" ]; then echo "    global:  $RDK_CONFIG"; else echo "    global:  (none — run 'rdk setup' to stop retyping VPS details per project)"; fi
+  if [ -f "$ENV_FILE" ];   then echo "    project: $ENV_FILE"; else echo "    project: (none — run 'rdk init')"; fi
+  echo ""
+  _src() {
+    if [ -f "$ENV_FILE" ] && grep -qE "^[[:space:]]*$1=" "$ENV_FILE"; then echo "project"
+    elif [ -f "$RDK_CONFIG" ] && grep -qE "^[[:space:]]*$1=" "$RDK_CONFIG"; then echo "global"
+    else echo "built-in"; fi
+  }
+  _builtin() {
+    case "$1" in
+      APP_PORT) echo 8000 ;; APP_SERVICE) echo "app (django stacks: django)" ;;
+      COMPOSE_FILE) echo docker-compose.remote.yml ;; APP_DOCKERFILE) echo ./Dockerfile ;;
+      PROXY_NETWORK) echo coolify ;; CERT_RESOLVER) echo letsencrypt ;;
+      CERT_ENTRYPOINT) echo https ;; HTTP_ENTRYPOINT) echo http ;;
+    esac
+  }
+  for k in PROJECT_NAME APP_HOST APP_PORT APP_SERVICE BASE_COMPOSE COMPOSE_FILE APP_DOCKERFILE \
+           VPS_SSH PROXY_NETWORK ACME_EMAIL CERT_RESOLVER CERT_ENTRYPOINT HTTP_ENTRYPOINT DOMAIN_BASE TTL; do
+    eval "_v=\${$k:-}"
+    if [ -n "$_v" ]; then
+      printf "  %-16s= %-42s (%s)\n" "$k" "$_v" "$(_src "$k")"
+    else
+      _d="$(_builtin "$k")"
+      if [ -n "$_d" ]; then printf "  %-16s= %-42s (built-in default)\n" "$k" "$_d"
+      else printf "  %-16s  %-42s\n" "$k" "(unset)"; fi
+    fi
+  done
   exit 0
 fi
 
 # --- everything else needs config ------------------------------------------
 [ -f "$ENV_FILE" ] || { echo "❌ no $ENV_FILE here. Run:  rdk init"; exit 1; }
-# Safe loader: parse KEY=VALUE only — never `source` (a crafted .env.remote must not run code).
-_rdk_load() {
-  local line key val
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
-    [ "${line#*=}" = "$line" ] && continue
-    key="${line%%=*}"; val="${line#*=}"
-    key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
-    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
-    # never let a config file hijack the shell/loader environment
-    case "$key" in PATH|IFS|ENV|BASH_ENV|SHELLOPTS|PS4|PROMPT_COMMAND|LD_*|DYLD_*|BASH_FUNC_*) continue ;; esac
-    val="${val%%[[:space:]]#*}"                       # strip inline comment
-    val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"  # trim
-    case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
-    export "$key=$val"
-  done < "$ENV_FILE"
-}
-_rdk_load
+# Global machine config first, then the project file — so a project overrides
+# by simply re-declaring a line.
+if [ -f "$RDK_CONFIG" ]; then _rdk_load_file "$RDK_CONFIG" "$GLOBAL_KEYS"; fi
+_rdk_load_file "$ENV_FILE"
 : "${PROJECT_NAME:?set PROJECT_NAME in $ENV_FILE}"
-: "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
+: "${VPS_SSH:?set VPS_SSH in $ENV_FILE (or once for all projects: rdk setup)}"
+
+# --- config sanity: catch the classic footguns before they cost a deploy ----
+# Docker project/container/network names choke on spaces and capitals.
+case "$PROJECT_NAME" in
+  ''|*[!a-z0-9_-]*)
+    echo "❌ PROJECT_NAME='$PROJECT_NAME' — Docker needs lowercase letters, digits, '-' or '_'."
+    echo "   try:  PROJECT_NAME=$(_slug "$PROJECT_NAME")"
+    exit 1 ;;
+esac
+
+# Hostnames are case-insensitive — normalise rather than fail.
+if [ -n "${APP_HOST:-}" ]; then
+  _lh="$(printf '%s' "$APP_HOST" | tr '[:upper:]' '[:lower:]')"
+  if [ "$_lh" != "$APP_HOST" ]; then export APP_HOST="$_lh"; fi
+  case "$APP_HOST" in
+    *[!a-z0-9.-]*) echo "❌ APP_HOST='$APP_HOST' is not a valid hostname"; exit 1 ;;
+  esac
+fi
+
+# doctor reports placeholders instead of dying — everything else refuses to run
+# with values that are guaranteed to fail at cert issuance.
+if [ "$cmd" != "doctor" ]; then
+  if _is_placeholder "$VPS_SSH"; then
+    echo "❌ VPS_SSH='$VPS_SSH' is still the template placeholder — set your real server."
+    echo "   (one-time:  rdk setup   saves it for every project)"
+    exit 1
+  fi
+  if [ -n "${APP_HOST:-}" ] && _is_placeholder "$APP_HOST"; then
+    echo "❌ APP_HOST='$APP_HOST' is still the template placeholder — set your real domain."
+    exit 1
+  fi
+fi
 
 CTX="remote-${PROJECT_NAME}"
 STACK_FILE="$STACKS/${COMPOSE_FILE:-docker-compose.remote.yml}"
@@ -177,8 +451,16 @@ _render_overlay() {
     echo "      - traefik.docker.network=${PROXY_NETWORK:-coolify}"
     echo "      - traefik.http.routers.${PROJECT_NAME}-web.rule=Host(\`${APP_HOST}\`)"
     echo "      - traefik.http.routers.${PROJECT_NAME}-web.entrypoints=${CERT_ENTRYPOINT:-https}"
+    echo "      - traefik.http.routers.${PROJECT_NAME}-web.tls=true"
     echo "      - traefik.http.routers.${PROJECT_NAME}-web.tls.certresolver=${CERT_RESOLVER:-letsencrypt}"
     echo "      - traefik.http.services.${PROJECT_NAME}-web.loadbalancer.server.port=${APP_PORT:-8000}"
+    # Plain-HTTP router that only redirects. Coolify's Traefik has no global
+    # http→https redirect, so without this port 80 404s.
+    echo "      - traefik.http.routers.${PROJECT_NAME}-http.rule=Host(\`${APP_HOST}\`)"
+    echo "      - traefik.http.routers.${PROJECT_NAME}-http.entrypoints=${HTTP_ENTRYPOINT:-http}"
+    echo "      - traefik.http.routers.${PROJECT_NAME}-http.middlewares=${PROJECT_NAME}-redirect"
+    echo "      - traefik.http.middlewares.${PROJECT_NAME}-redirect.redirectscheme.scheme=https"
+    echo "      - traefik.http.middlewares.${PROJECT_NAME}-redirect.redirectscheme.permanent=true"
 
     # Only add hot-reload sync if the author hasn't written their own. Compose appends
     # sequences on merge, so duplicating `develop.watch` would double every sync rule.
@@ -318,7 +600,21 @@ _bad()  { printf "  \033[31m✘\033[0m %s\n" "$1"; RDK_FAIL=$((RDK_FAIL+1)); }
 case "$cmd" in
   connect)
     docker context create "$CTX" --docker "host=ssh://${VPS_SSH}" 2>/dev/null \
-      && echo "✅ connected '$CTX' → ${VPS_SSH}" || echo "ℹ️  context '$CTX' already exists" ;;
+      && echo "✅ connected '$CTX' → ${VPS_SSH}" || echo "ℹ️  context '$CTX' already exists"
+    # First contact with the box — the right moment to catch a wrong PROXY_NETWORK,
+    # before it fails an actual deploy with "network not found".
+    _nets="$(docker --context "$CTX" network ls --format '{{.Name}}' 2>/dev/null || true)"
+    if [ -n "$_nets" ]; then
+      _pn="${PROXY_NETWORK:-coolify}"
+      if ! printf '%s\n' "$_nets" | grep -qxF "$_pn"; then
+        if _det="$(_detect_proxy_net "$_nets")"; then
+          echo "⚠️  PROXY_NETWORK='$_pn' doesn't exist on this VPS, but '$_det' does."
+          echo "    set PROXY_NETWORK=$_det in $ENV_FILE (or rdk setup) before 'rdk up'"
+        else
+          echo "⚠️  network '$_pn' doesn't exist on this VPS yet — bare VPS? run once:  rdk proxy up"
+        fi
+      fi
+    fi ;;
 
   reaper)
     sub="${1:-up}"; [ $# -gt 0 ] && shift || true
@@ -371,19 +667,70 @@ case "$cmd" in
     net="${PROXY_NETWORK:-web}"; sub="${1:-up}"; [ $# -gt 0 ] && shift || true
     P=(docker --context "$CTX" compose -p remote-proxy --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$STACKS/traefik.yml")
     case "$sub" in
-      up)   docker --context "$CTX" network create "$net" 2>/dev/null && echo "✅ net '$net'" || true; "${P[@]}" up -d && echo "✅ proxy up (80/443)";;
+      up)
+        # Traefik hands this straight to Let's Encrypt — a placeholder email fails issuance.
+        if _is_placeholder "${ACME_EMAIL:-you@example.com}"; then
+          echo "❌ ACME_EMAIL='${ACME_EMAIL:-}' — Let's Encrypt needs your real email before certs can be issued."
+          exit 1
+        fi
+        docker --context "$CTX" network create "$net" 2>/dev/null && echo "✅ net '$net'" || true; "${P[@]}" up -d && echo "✅ proxy up (80/443)";;
       down) "${P[@]}" down ;;
       *) echo "usage: rdk proxy {up|down}"; exit 1 ;;
     esac ;;
   doctor)
     echo "🩺 RDK doctor — $PROJECT_NAME"
     command -v docker >/dev/null 2>&1 && _ok "docker CLI installed" || _bad "docker CLI missing (brew install docker)"
+
+    # placeholders left in config fail late (cert issuance) — surface them here
+    if _is_placeholder "$VPS_SSH"; then
+      _bad "VPS_SSH='$VPS_SSH' is still the template placeholder (set it, or run: rdk setup)"
+    fi
+    if [ -n "${APP_HOST:-}" ] && _is_placeholder "$APP_HOST"; then
+      _bad "APP_HOST='$APP_HOST' is still the template placeholder"
+    fi
+    if [ -n "${ACME_EMAIL:-}" ] && _is_placeholder "$ACME_EMAIL"; then
+      _warn "ACME_EMAIL='$ACME_EMAIL' is a placeholder — Let's Encrypt will reject it (bare-VPS mode)"
+    fi
+
     if ssh -o BatchMode=yes -o ConnectTimeout=8 "$VPS_SSH" 'echo ok' >/dev/null 2>&1; then
       _ok "passwordless SSH to $VPS_SSH"
     else
       _bad "SSH to $VPS_SSH is not passwordless (run: ssh-copy-id $VPS_SSH)"
     fi
     docker context inspect "$CTX" >/dev/null 2>&1 && _ok "docker context '$CTX' exists" || _warn "context '$CTX' missing — run: rdk connect"
+
+    # Does the configured proxy network actually exist on the box? Guessing
+    # web-vs-coolify wrong is the #1 deploy failure — detect, don't guess.
+    if docker context inspect "$CTX" >/dev/null 2>&1; then
+      _nets="$(docker --context "$CTX" network ls --format '{{.Name}}' 2>/dev/null || true)"
+      if [ -n "$_nets" ]; then
+        _pn="${PROXY_NETWORK:-coolify}"
+        if printf '%s\n' "$_nets" | grep -qxF "$_pn"; then
+          _ok "proxy network '$_pn' exists on the VPS"
+        elif _det="$(_detect_proxy_net "$_nets")"; then
+          _bad "PROXY_NETWORK='$_pn' doesn't exist on the VPS, but '$_det' does — set PROXY_NETWORK=$_det"
+        else
+          _warn "no '$_pn' network on the VPS — bare VPS? run once:  rdk proxy up"
+        fi
+      fi
+    fi
+
+    # APP_HOST must point at the VPS — catch dead DNS before a deploy fails on certs
+    if [ -n "${APP_HOST:-}" ] && ! _is_placeholder "$APP_HOST" && command -v dig >/dev/null 2>&1; then
+      _vps_host="${VPS_SSH#*@}"
+      case "$_vps_host" in
+        *[!0-9.]*) _vps_ip="$(dig +short A "$_vps_host" 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)" ;;
+        *)         _vps_ip="$_vps_host" ;;
+      esac
+      _app_ips="$(dig +short A "$APP_HOST" 2>/dev/null | grep -E '^[0-9.]+$' || true)"
+      if [ -z "$_app_ips" ]; then
+        _bad "APP_HOST $APP_HOST does not resolve — add a DNS A record → ${_vps_ip:-your VPS IP}"
+      elif [ -n "$_vps_ip" ] && printf '%s\n' "$_app_ips" | grep -qxF "$_vps_ip"; then
+        _ok "APP_HOST $APP_HOST resolves to the VPS ($_vps_ip)"
+      else
+        _warn "APP_HOST resolves to $(echo $_app_ips | tr '\n' ' ')— VPS is ${_vps_ip:-unknown} (proxied DNS, e.g. Cloudflare orange-cloud, can be fine)"
+      fi
+    fi
 
     if [ -n "$BASE_COMPOSE" ]; then
       _ok "overlay mode — your $BASE_COMPOSE + rdk's traefik labels"
@@ -452,6 +799,57 @@ case "$cmd" in
       [ -z "$pub" ] && _ok "no host-published ports (traffic via proxy only)" || _warn "host-published ports (should be proxy-only): $(echo "$pub" | tr '\n' ' ')"
     fi
     echo "── $RDK_FAIL failed, $RDK_WARN warnings ──"; [ "$RDK_FAIL" -eq 0 ] ;;
+
+  stack)
+    # The compose template + .env.remote should be self-documenting: nobody should
+    # have to open the compose file to learn which env vars it consumes.
+    sub="${1:-explain}"
+    case "$sub" in
+      explain)
+        echo "📦 stack for $PROJECT_NAME"
+        if [ -n "$BASE_COMPOSE" ]; then
+          echo "   mode: overlay — YOUR compose file is the source of truth"
+          echo "   files: $BASE_COMPOSE + generated overlay ($OVERLAY)"
+          _svcs="$(_base_services)"
+          if [ -n "$_svcs" ]; then
+            echo "   services (from $BASE_COMPOSE):"
+            printf '     %s\n' $_svcs
+          fi
+          echo "   rdk touches ONLY '$APP_SERVICE': joins it to the '${PROXY_NETWORK:-coolify}' proxy network"
+          echo "   and routes https://${APP_HOST:-<APP_HOST>} → its port ${APP_PORT:-8000}"
+        else
+          echo "   mode: bundled stack — $(basename "$STACK_FILE")"
+          echo "   services:"
+          awk '/^services:/{s=1;next} /^[a-zA-Z#]/{s=0} s&&/^  [a-zA-Z0-9_-]+:/{gsub(/[: ]/,"");print "     "$0}' "$STACK_FILE"
+          echo "   env vars this stack reads (from $ENV_FILE):"
+          grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*(:?[-?][^}]*)?\}' "$STACK_FILE" | awk '
+            {
+              raw=$0
+              name=raw; sub(/^\$\{/,"",name); sub(/[:}\-?].*/,"",name)
+              if (!(name in idx)) { idx[name]=++n; order[n]=name }
+              if (raw ~ /:\?/) req[name]=1
+              if (match(raw, /:-[^}]*/)) { d=substr(raw, RSTART+2, RLENGTH-2); if (!(name in def)) def[name]=d }
+            }
+            END {
+              for (i=1;i<=n;i++) { name=order[i]
+                if (req[name])            printf "     %-18s ← REQUIRED, set it in .env.remote\n", name
+                else if (name in def)     printf "     %-18s (default: %s)\n", name, def[name]
+                else                      printf "     %s\n", name
+              }
+            }'
+          _vols="$(awk '/^volumes:/{s=1;next} /^[a-zA-Z#]/{s=0} s&&/^  [a-zA-Z0-9_-]+:/{gsub(/[: {}]/,"");print $0}' "$STACK_FILE")"
+          if [ -n "$_vols" ]; then
+            echo "   data volumes: $(echo $_vols | tr '\n' ' ')"
+            echo "     'rdk stop' KEEPS them, 'rdk down' DESTROYS them"
+          fi
+          echo "   public entry: https://${APP_HOST:-<APP_HOST>} → service '$APP_SERVICE' port ${APP_PORT:-8000}"
+          case "$STACK_FILE" in
+            *-db*)     echo "   the app reaches the backing services at:  ${PROJECT_NAME}-postgres:5432  and  ${PROJECT_NAME}-redis:6379" ;;
+            *django*)  echo "   note: expects a Cookiecutter-Django layout (manage.py) — use 'rdk manage <cmd>'" ;;
+          esac
+        fi ;;
+      *) echo "usage: rdk stack explain"; exit 1 ;;
+    esac ;;
 
   vps)
     # Everything on the box, not just this project — so you can see what else is
