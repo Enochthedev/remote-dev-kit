@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check every script
+        run: |
+          for f in bin/rdk bin/remote install.sh install-global.sh; do
+            bash -n "$f"
+          done
+
+      - name: ShellCheck
+        run: shellcheck --severity=warning bin/rdk bin/remote install.sh install-global.sh
+
+  stacks:
+    name: Compose and editor config
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the compose files and the VS Code task file
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys, yaml
+
+          bad = []
+          for p in sorted(pathlib.Path("stacks").glob("*.yml")):
+              try:
+                  yaml.safe_load(p.read_text())
+              except Exception as e:
+                  bad.append(f"{p}: {e}")
+          try:
+              json.loads(pathlib.Path("editor/vscode-tasks.json").read_text())
+          except Exception as e:
+              bad.append(f"editor/vscode-tasks.json: {e}")
+
+          if bad:
+              print("\n".join(bad))
+              sys.exit(1)
+          print("all stack files parse")
+          PY

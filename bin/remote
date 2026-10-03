@@ -9,7 +9,10 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "❌ Missing $ENV_FILE — copy .env.remote.example to .env.remote and edit it." >&2
   exit 1
 fi
-set -a; source "$ENV_FILE"; set +a
+set -a
+# shellcheck source=/dev/null  # ENV_FILE is the user's .env.remote, resolved at runtime
+source "$ENV_FILE"
+set +a
 : "${PROJECT_NAME:?set PROJECT_NAME in $ENV_FILE}"
 : "${VPS_SSH:?set VPS_SSH in $ENV_FILE}"
 
